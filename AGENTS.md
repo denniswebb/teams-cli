@@ -34,9 +34,9 @@ src/
     tenant.rs       -- list, domains
     config_cmd.rs   -- init, show, set, path
   auth/
-    mod.rs          -- Token resolution: env vars > file store > fossteams compat
+    mod.rs          -- Token resolution: env vars > file store
     token.rs        -- TokenSet, TokenInfo, JWT decode, constants
-    webview.rs      -- tao/wry webview for 3-token OAuth2 implicit flow (diverges via process::exit)
+    webview.rs      -- tao/wry webview for 3-token OAuth2 implicit flow (returns Result<TokenSet>)
     device_code.rs  -- OAuth2 device code flow fallback for headless
     keyring.rs      -- File-based token storage at ~/.config/teams-cli/tokens/<profile>.json (0600/0700)
   api/

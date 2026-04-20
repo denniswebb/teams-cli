@@ -49,15 +49,9 @@ pub async fn handle(args: &AuthArgs, profile: &str, format: OutputFormat) -> Res
                 let token_set = auth::device_code::device_code_login(tenant, profile).await?;
                 auth::keyring::store_tokens(profile, &token_set)?;
                 print_login_success(&token_set, format);
-            } else {
-                // Webview login — must be on main thread
-                // For now, fall back to device code with a message
-                eprintln!("Webview login requires running on the main thread.");
-                eprintln!("Falling back to device code flow...");
-                let token_set = auth::device_code::device_code_login(tenant, profile).await?;
-                auth::keyring::store_tokens(profile, &token_set)?;
-                print_login_success(&token_set, format);
             }
+            // Webview login (device_code: false) is handled on the main thread
+            // before the async runtime starts. See main.rs.
             Ok(())
         }
 
@@ -133,7 +127,7 @@ pub async fn handle(args: &AuthArgs, profile: &str, format: OutputFormat) -> Res
     }
 }
 
-fn print_login_success(token_set: &TokenSet, format: OutputFormat) {
+pub fn print_login_success(token_set: &TokenSet, format: OutputFormat) {
     let username = extract_username(&token_set.teams.raw).unwrap_or_else(|_| "unknown".into());
     let result = serde_json::json!({
         "status": "authenticated",

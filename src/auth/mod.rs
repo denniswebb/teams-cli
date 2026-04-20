@@ -1,14 +1,13 @@
 pub mod device_code;
 pub mod keyring;
 pub mod token;
-#[allow(dead_code)]
 pub mod webview;
 
 use crate::error::{Result, TeamsError};
 use token::TokenSet;
 
 /// Resolve tokens for the given profile.
-/// Priority: env vars > keyring (if valid) > fossteams files (if valid) > keyring (expired) > fossteams (expired)
+/// Priority: env vars > keyring (if valid) > keyring (expired)
 pub fn resolve_tokens(profile: &str) -> Result<Option<TokenSet>> {
     // Check environment variables first
     if let (Ok(teams), Ok(skype), Ok(chatsvcagg)) = (
@@ -26,95 +25,8 @@ pub fn resolve_tokens(profile: &str) -> Result<Option<TokenSet>> {
         return Ok(Some(token_set));
     }
 
-    // Check keyring first (this is where webview login stores tokens)
-    let keyring_tokens = keyring::get_tokens(profile)?;
-    if let Some(ref ts) = keyring_tokens {
-        if !ts.is_expired() {
-            return Ok(keyring_tokens);
-        }
-    }
-
-    // Check fossteams token directory for compatibility
-    let fossteams_tokens = resolve_fossteams_tokens(profile)?;
-    if let Some(ref ts) = fossteams_tokens {
-        if !ts.is_expired() {
-            return Ok(fossteams_tokens);
-        }
-    }
-
-    // Return whichever expired tokens we have (keyring preferred)
-    if keyring_tokens.is_some() {
-        return Ok(keyring_tokens);
-    }
-    Ok(fossteams_tokens)
-}
-
-fn check_fossteams_file_permissions(path: &std::path::Path) -> Result<bool> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let meta = std::fs::metadata(path).map_err(|e| {
-            TeamsError::AuthError(format!("failed to stat {}: {e}", path.display()))
-        })?;
-        if meta.mode() & 0o077 != 0 {
-            tracing::warn!(
-                "skipping {}: file is accessible by other users",
-                path.display()
-            );
-            return Ok(false);
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-    }
-    Ok(true)
-}
-
-/// Check ~/.config/fossteams/ for tokens (backward compat with fossteams/teams-token)
-fn resolve_fossteams_tokens(profile: &str) -> Result<Option<TokenSet>> {
-    let config_dir = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".config")
-        .join("fossteams");
-
-    let teams_path = config_dir.join("token-teams.jwt");
-    let skype_path = config_dir.join("token-skype.jwt");
-    let chatsvcagg_path = config_dir.join("token-chatsvcagg.jwt");
-
-    if !teams_path.exists() || !skype_path.exists() || !chatsvcagg_path.exists() {
-        return Ok(None);
-    }
-
-    if !check_fossteams_file_permissions(&teams_path)?
-        || !check_fossteams_file_permissions(&skype_path)?
-        || !check_fossteams_file_permissions(&chatsvcagg_path)?
-    {
-        return Ok(None);
-    }
-
-    let teams_raw = std::fs::read_to_string(&teams_path)
-        .map_err(|e| TeamsError::AuthError(format!("failed to read teams token: {e}")))?
-        .trim()
-        .to_string();
-    let skype_raw = std::fs::read_to_string(&skype_path)
-        .map_err(|e| TeamsError::AuthError(format!("failed to read skype token: {e}")))?
-        .trim()
-        .to_string();
-    let chatsvcagg_raw = std::fs::read_to_string(&chatsvcagg_path)
-        .map_err(|e| TeamsError::AuthError(format!("failed to read chatsvcagg token: {e}")))?
-        .trim()
-        .to_string();
-
-    let tenant_id = token::extract_tenant_id(&teams_raw)?.unwrap_or_else(|| "common".to_string());
-
-    Ok(Some(TokenSet {
-        teams: token::TokenInfo::from_jwt(&teams_raw, token::TokenType::IdToken)?,
-        skype: token::TokenInfo::from_jwt(&skype_raw, token::TokenType::AccessToken)?,
-        chatsvcagg: token::TokenInfo::from_jwt(&chatsvcagg_raw, token::TokenType::AccessToken)?,
-        profile: profile.to_string(),
-        tenant_id,
-    }))
+    // Check keyring (this is where webview login stores tokens)
+    keyring::get_tokens(profile)
 }
 
 /// Get tokens, performing auto-login if needed and allowed.

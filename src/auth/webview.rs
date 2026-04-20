@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
+use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::window::WindowBuilder;
 use wry::WebViewBuilder;
 
@@ -101,8 +102,8 @@ fn is_allowed_domain(url: &str) -> bool {
 }
 
 /// Run the webview-based 3-token OAuth2 flow.
-/// Must be called from the main thread. Calls process::exit when done.
-pub fn webview_login(initial_tenant: &str, profile: &str) -> ! {
+/// Must be called from the main thread. Returns the token set on success.
+pub fn webview_login(initial_tenant: &str, profile: &str) -> crate::error::Result<TokenSet> {
     let (initial_url, initial_state) = build_auth_url(initial_tenant, "id_token", None);
 
     let state = Arc::new(Mutex::new(AuthState {
@@ -116,9 +117,9 @@ pub fn webview_login(initial_tenant: &str, profile: &str) -> ! {
     }));
 
     let profile = profile.to_string();
+    let result: Arc<Mutex<Option<crate::error::Result<TokenSet>>>> = Arc::new(Mutex::new(None));
 
-    // UserEvent carries: "navigate:<url>", "done", or "error:<msg>"
-    let event_loop = EventLoopBuilder::<String>::with_user_event().build();
+    let mut event_loop = EventLoopBuilder::<String>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
     let window = WindowBuilder::new()
@@ -210,40 +211,32 @@ pub fn webview_login(initial_tenant: &str, profile: &str) -> ! {
         .expect("failed to create webview");
 
     let state_for_loop = state.clone();
+    let result_for_loop = result.clone();
 
-    event_loop.run(move |event, _, control_flow| {
+    event_loop.run_return(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
         match event {
             Event::UserEvent(ref msg) => {
                 if let Some(url) = msg.strip_prefix("navigate:") {
-                    // Navigate the webview to the next auth URL
                     if let Err(e) = webview.load_url(url) {
-                        eprintln!("Failed to navigate: {e}");
-                        std::process::exit(3);
+                        *result_for_loop.lock().unwrap_or_else(|e| e.into_inner()) = Some(Err(
+                            TeamsError::AuthError(format!("failed to navigate: {e}")),
+                        ));
+                        *control_flow = ControlFlow::Exit;
                     }
                 } else if msg == "done" {
                     let auth = state_for_loop.lock().unwrap_or_else(|e| e.into_inner());
-                    match build_token_set(&auth, &profile) {
-                        Ok(token_set) => {
-                            if let Err(e) = crate::auth::keyring::store_tokens(&profile, &token_set)
-                            {
-                                eprintln!("Failed to store tokens: {e}");
-                                std::process::exit(3);
-                            }
-                            let username = super::token::extract_username(&token_set.teams.raw)
-                                .unwrap_or_else(|_| "unknown".into());
-                            eprintln!("Authenticated as {username}");
-                            std::process::exit(0);
-                        }
-                        Err(e) => {
-                            eprintln!("Authentication failed: {e}");
-                            std::process::exit(3);
-                        }
-                    }
+                    let outcome = build_token_set(&auth, &profile).and_then(|token_set| {
+                        crate::auth::keyring::store_tokens(&profile, &token_set)?;
+                        Ok(token_set)
+                    });
+                    *result_for_loop.lock().unwrap_or_else(|e| e.into_inner()) = Some(outcome);
+                    *control_flow = ControlFlow::Exit;
                 } else if let Some(err_msg) = msg.strip_prefix("error:") {
-                    eprintln!("Authentication error: {err_msg}");
-                    std::process::exit(3);
+                    *result_for_loop.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some(Err(TeamsError::AuthError(err_msg.to_string())));
+                    *control_flow = ControlFlow::Exit;
                 }
             }
             Event::WindowEvent {
@@ -252,24 +245,29 @@ pub fn webview_login(initial_tenant: &str, profile: &str) -> ! {
             } => {
                 let auth = state_for_loop.lock().unwrap_or_else(|e| e.into_inner());
                 if auth.phase == AuthPhase::Done {
-                    match build_token_set(&auth, &profile) {
-                        Ok(token_set) => {
-                            let _ = crate::auth::keyring::store_tokens(&profile, &token_set);
-                            std::process::exit(0);
-                        }
-                        Err(e) => {
-                            eprintln!("Authentication failed: {e}");
-                            std::process::exit(3);
-                        }
-                    }
+                    let outcome = build_token_set(&auth, &profile).and_then(|token_set| {
+                        crate::auth::keyring::store_tokens(&profile, &token_set)?;
+                        Ok(token_set)
+                    });
+                    *result_for_loop.lock().unwrap_or_else(|e| e.into_inner()) = Some(outcome);
                 } else {
-                    eprintln!("Login cancelled by user");
-                    std::process::exit(3);
+                    *result_for_loop.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some(Err(TeamsError::AuthError("login cancelled by user".into())));
                 }
+                *control_flow = ControlFlow::Exit;
             }
             _ => {}
         }
-    })
+    });
+
+    // Extract the result from the event loop
+    let outcome = result
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+        .unwrap_or_else(|| Err(TeamsError::AuthError("login did not complete".into())));
+
+    outcome
 }
 
 fn build_token_set(auth: &AuthState, profile: &str) -> crate::error::Result<TokenSet> {

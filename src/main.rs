@@ -43,13 +43,64 @@ fn main() {
     };
 
     // Webview login must run on the main thread (tao/wry requirement).
+    // Handle explicit `auth login` (without --device-code).
     if let Commands::Auth(ref auth_args) = cli.command {
         if let cli::auth::AuthCommand::Login {
             device_code: false,
             ref tenant,
         } = auth_args.command
         {
-            auth::webview::webview_login(tenant, &cli.profile);
+            match auth::webview::webview_login(tenant, &cli.profile) {
+                Ok(token_set) => {
+                    let username = auth::token::extract_username(&token_set.teams.raw)
+                        .unwrap_or_else(|_| "unknown".into());
+                    eprintln!("Authenticated as {username}");
+                    cli::auth::print_login_success(&token_set, format);
+                    return;
+                }
+                Err(e) => {
+                    output::print_error(format, e.error_code(), &e.to_string(), 0);
+                    std::process::exit(e.exit_code());
+                }
+            }
+        }
+    }
+
+    // Auto-login via webview: if a non-auth command needs tokens and they're
+    // missing or expired, run webview login on the main thread before tokio starts.
+    // Silent on success; errors go to stderr.
+    if !matches!(
+        cli.command,
+        Commands::Auth(_) | Commands::Config(_) | Commands::Completions { .. }
+    ) && !cli.no_auto_login
+    {
+        let cfg = config::Config::load().ok();
+        let profile = if cli.profile == "default" {
+            cfg.as_ref()
+                .map(|c| c.default.profile.as_str())
+                .unwrap_or("default")
+        } else {
+            &cli.profile
+        };
+        let needs_login = match auth::resolve_tokens(profile) {
+            Ok(Some(ts)) => ts.is_expired(),
+            Ok(None) => true,
+            Err(_) => true,
+        };
+        if needs_login {
+            let tenant = cfg
+                .as_ref()
+                .map(|c| c.profile(profile).tenant_id.clone())
+                .unwrap_or_else(|| "common".to_string());
+            match auth::webview::webview_login(&tenant, profile) {
+                Ok(token_set) => {
+                    tracing::debug!("auto-login successful for profile '{}'", token_set.profile);
+                }
+                Err(e) => {
+                    eprintln!("auto-login failed: {e}");
+                    std::process::exit(e.exit_code());
+                }
+            }
         }
     }
 

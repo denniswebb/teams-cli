@@ -39,10 +39,10 @@ teams auth token skype
 teams auth logout
 ```
 
-Tokens are stored as JSON files at `~/.config/teams-cli/tokens/<profile>.json`
-(file mode `0600`, directory mode `0700`). The CLI also reads tokens from
-`~/.config/fossteams/` for backward compatibility with
-[fossteams/teams-token](https://github.com/fossteams/teams-token).
+Tokens are stored as JSON files at `<config-dir>/teams-cli/tokens/<profile>.json`
+(file mode `0600`, directory mode `0700`). The config directory is
+platform-dependent: `~/Library/Application Support` on macOS,
+`~/.config` on Linux. Run `teams config path` to see the resolved location.
 
 ### Auto-login
 
@@ -161,7 +161,8 @@ Setting only one or two is not sufficient.
 
 ## Configuration File
 
-Config lives at `~/.config/teams-cli/config.toml`. Initialize with `teams config init`.
+Config lives at `<config-dir>/teams-cli/config.toml`. Initialize with `teams config init`.
+Run `teams config path` to see the resolved location.
 
 ```toml
 [default]
