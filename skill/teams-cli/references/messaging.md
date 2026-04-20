@@ -64,6 +64,29 @@ channel_id="${result##*|}"
 teams message list "$channel_id" --limit 10 --output json
 ```
 
+### @Mentioning users
+
+To @mention someone in a Teams message, use HTML `<at>` tags with their MRI.
+Use the cache to resolve names to MRIs first (see `references/discovery.md`).
+
+```sh
+# 1. Resolve user
+result=$(bash ${CLAUDE_SKILL_DIR}/scripts/cache.sh lookup-user "Colin Hines")
+email="${result%%|*}"
+mri="${result##*|}"
+
+# 2. Send with @mention (must use --stdin for HTML)
+cat <<MSG | teams message send "$chat_id" --stdin
+<at id="$mri">Colin Hines</at> the deploy is done.
+MSG
+```
+
+The `<at id="MRI">Display Name</at>` syntax is the input format. The CLI
+automatically converts these to the `<span>` mention tags and metadata that
+the Teams API requires. The MRI format is `8:orgid:{azure-ad-object-id}`.
+Multiple mentions work in the same message. Content containing `<at>` tags
+is auto-detected as HTML — no need to pass `--html` explicitly.
+
 ### Multi-line messages
 
 ```sh

@@ -34,6 +34,9 @@ pub enum MessageCommand {
         /// Read message body from stdin
         #[arg(long)]
         stdin: bool,
+        /// Send as HTML (auto-detected if content contains <at> mention tags)
+        #[arg(long)]
+        html: bool,
     },
     /// Get a specific message
     Get {
@@ -80,26 +83,40 @@ pub async fn handle(
             conversation_id,
             body,
             stdin,
+            html,
         } => {
             let content = if *stdin {
                 let mut buf = String::new();
                 std::io::stdin()
                     .read_to_string(&mut buf)
                     .map_err(|e| crate::error::TeamsError::InvalidInput(format!("stdin: {e}")))?;
-                buf
+                buf.trim_end().to_string()
             } else {
                 body.clone().ok_or_else(|| {
                     crate::error::TeamsError::InvalidInput("provide --body or --stdin".into())
                 })?
             };
 
-            // Get display name
+            // Auto-detect HTML if content contains <at> mention tags or explicit --html
+            let is_html = *html || content.contains("<at ");
+            let (final_content, mentions_json) = if is_html {
+                parse_and_rewrite_mentions(&content)
+            } else {
+                (content, None)
+            };
+
             let display_name = crate::auth::token::extract_username(&tokens.teams.raw)
                 .unwrap_or_else(|_| "Unknown".into());
 
             let start = Instant::now();
             let result = msg_client
-                .send_message(conversation_id, &content, &display_name)
+                .send_message(
+                    conversation_id,
+                    &final_content,
+                    &display_name,
+                    is_html,
+                    mentions_json.as_deref(),
+                )
                 .await?;
             output::print_output(format, result, start.elapsed().as_millis() as u64);
         }
@@ -121,6 +138,54 @@ pub async fn handle(
     Ok(())
 }
 
+/// Parse `<at id="8:orgid:...">Name</at>` tags from content.
+/// Rewrites them to `<span>` mention tags and builds the mentions metadata JSON
+/// that the Teams API expects.
+fn parse_and_rewrite_mentions(content: &str) -> (String, Option<String>) {
+    let re_str = r#"<at id="([^"]+)">([^<]+)</at>"#;
+    let re = regex::Regex::new(re_str).expect("valid regex");
+
+    let mut mentions = Vec::new();
+
+    // First pass: collect mentions
+    for (idx, cap) in re.captures_iter(content).enumerate() {
+        let mri = cap[1].to_string();
+        let display_name = cap[2].to_string();
+        mentions.push((mri, display_name, idx as u32));
+    }
+
+    if mentions.is_empty() {
+        return (content.to_string(), None);
+    }
+
+    // Second pass: rewrite <at> tags to <span> mention tags
+    let mut rewritten = content.to_string();
+    for (mri, name, id) in &mentions {
+        let old_tag = format!(r#"<at id="{mri}">{name}</at>"#);
+        let new_tag = format!(
+            r#"<span itemtype="http://schema.skype.com/Mention" itemscope="" itemid="{id}">{name}</span>"#
+        );
+        rewritten = rewritten.replacen(&old_tag, &new_tag, 1);
+    }
+
+    // Build mentions metadata array
+    let mentions_arr: Vec<serde_json::Value> = mentions
+        .iter()
+        .map(|(mri, name, id)| {
+            serde_json::json!({
+                "@type": "http://schema.skype.com/Mention",
+                "itemid": id,
+                "mri": mri,
+                "mentionType": "person",
+                "displayName": name,
+            })
+        })
+        .collect();
+
+    let mentions_json = serde_json::to_string(&mentions_arr).expect("serialize mentions");
+    (rewritten, Some(mentions_json))
+}
+
 fn strip_html(html: &str) -> String {
     let mut result = String::new();
     let mut in_tag = false;
@@ -138,6 +203,41 @@ fn strip_html(html: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_mentions_no_at_tags() {
+        let (content, mentions) = parse_and_rewrite_mentions("Hello world");
+        assert_eq!(content, "Hello world");
+        assert!(mentions.is_none());
+    }
+
+    #[test]
+    fn parse_mentions_single_mention() {
+        let input = r#"<at id="8:orgid:abc-123">Colin Hines</at> check this out"#;
+        let (content, mentions) = parse_and_rewrite_mentions(input);
+        assert!(content.contains(r#"itemid="0">Colin Hines</span>"#));
+        assert!(content.contains("check this out"));
+        let mentions_arr: Vec<serde_json::Value> =
+            serde_json::from_str(mentions.as_ref().unwrap()).unwrap();
+        assert_eq!(mentions_arr.len(), 1);
+        assert_eq!(mentions_arr[0]["mri"], "8:orgid:abc-123");
+        assert_eq!(mentions_arr[0]["displayName"], "Colin Hines");
+        assert_eq!(mentions_arr[0]["mentionType"], "person");
+        assert_eq!(mentions_arr[0]["itemid"], 0);
+    }
+
+    #[test]
+    fn parse_mentions_multiple_mentions() {
+        let input = r#"<at id="8:orgid:aaa">Alice</at> and <at id="8:orgid:bbb">Bob</at> hello"#;
+        let (content, mentions) = parse_and_rewrite_mentions(input);
+        assert!(content.contains(r#"itemid="0">Alice</span>"#));
+        assert!(content.contains(r#"itemid="1">Bob</span>"#));
+        let mentions_arr: Vec<serde_json::Value> =
+            serde_json::from_str(mentions.as_ref().unwrap()).unwrap();
+        assert_eq!(mentions_arr.len(), 2);
+        assert_eq!(mentions_arr[0]["mri"], "8:orgid:aaa");
+        assert_eq!(mentions_arr[1]["mri"], "8:orgid:bbb");
+    }
 
     #[test]
     fn strip_html_paragraph() {

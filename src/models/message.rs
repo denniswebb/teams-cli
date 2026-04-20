@@ -98,6 +98,8 @@ pub struct SendMessageProperties {
     pub importance: Option<String>,
     #[serde(default)]
     pub subject: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mentions: Option<String>,
 }
 
 fn default_message_type() -> String {
@@ -228,6 +230,7 @@ mod tests {
             properties: Some(SendMessageProperties {
                 importance: Some("normal".to_string()),
                 subject: None,
+                mentions: None,
             }),
         };
 

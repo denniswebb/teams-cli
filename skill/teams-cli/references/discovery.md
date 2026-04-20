@@ -48,8 +48,25 @@ chat_id=$(bash ${CLAUDE_SKILL_DIR}/scripts/cache.sh lookup-chat "John Smith")
 team_id=$(bash ${CLAUDE_SKILL_DIR}/scripts/cache.sh lookup-team "Engineering")
 ```
 
+**Users** — returns `email|mri` (pipe-separated):
+
+```sh
+# By email (fetches from API on cache miss)
+result=$(bash ${CLAUDE_SKILL_DIR}/scripts/cache.sh lookup-user "chines@thig.com")
+email="${result%%|*}"
+mri="${result##*|}"
+
+# By display name (cache only — use cache-user to seed first)
+result=$(bash ${CLAUDE_SKILL_DIR}/scripts/cache.sh lookup-user "Colin Hines")
+
+# Explicitly cache a user by email
+bash ${CLAUDE_SKILL_DIR}/scripts/cache.sh cache-user dwebb@thig.com
+```
+
 All lookups are fuzzy and case-insensitive. "general" matches "General",
-"eng" matches "Engineering". On cache miss, the script auto-refreshes and retries.
+"eng" matches "Engineering". Lookups are instant — they check the cache only
+and return exit code 1 on miss. Use the API directly as fallback, and
+`cache.sh set` to learn the result for next time.
 
 ### Cache management
 
@@ -59,14 +76,14 @@ bash ${CLAUDE_SKILL_DIR}/scripts/cache.sh clear    # Delete and start fresh
 bash ${CLAUDE_SKILL_DIR}/scripts/cache.sh age <section> <key>  # Seconds since last update
 ```
 
-### Workflow: always try cache first
+### Workflow: cache-first with API fallback
 
 For ANY operation that needs a team, channel, or chat ID:
 
-1. Run the cache lookup command
-2. If hit, use the ID directly (0 extra API calls)
-3. If miss, the lookup auto-refreshes and retries
-4. If still not found, fall back to direct API commands below
+1. Try the cache lookup (instant, no API calls)
+2. If hit, use the ID directly
+3. If miss, use the direct API commands below to find what you need
+4. Cache the result: `bash ${CLAUDE_SKILL_DIR}/scripts/cache.sh set <section> <key> <value>`
 
 ## Direct API Commands
 

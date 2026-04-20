@@ -54,6 +54,8 @@ impl<'a> MessagesClient<'a> {
         conversation_id: &str,
         content: &str,
         display_name: &str,
+        is_html: bool,
+        mentions_json: Option<&str>,
     ) -> Result<serde_json::Value> {
         let encoded_id = urlencoding::encode(conversation_id);
         let url = format!(
@@ -62,15 +64,17 @@ impl<'a> MessagesClient<'a> {
         );
         let auth = self.auth_header();
 
+        let messagetype = if is_html { "RichText/Html" } else { "Text" };
         let body = SendMessageRequest {
             content: content.to_string(),
-            messagetype: "Text".to_string(),
+            messagetype: messagetype.to_string(),
             contenttype: "text".to_string(),
             clientmessageid: chrono::Utc::now().timestamp_millis().to_string(),
             imdisplayname: display_name.to_string(),
             properties: Some(SendMessageProperties {
                 importance: Some(String::new()),
                 subject: None,
+                mentions: mentions_json.map(|s| s.to_string()),
             }),
         };
 

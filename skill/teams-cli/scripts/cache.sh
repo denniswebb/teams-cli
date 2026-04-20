@@ -13,7 +13,15 @@ mkdir -p "$CACHE_DIR"
 
 # Initialize empty cache if missing
 if [[ ! -f "$CACHE_FILE" ]]; then
-  echo '{"teams":{},"channels":{},"chats":{},"updated_at":{}}' > "$CACHE_FILE"
+  echo '{"teams":{},"channels":{},"chats":{},"users":{},"updated_at":{}}' > "$CACHE_FILE"
+fi
+
+# Migrate: add users section if missing from older cache
+if command -v jq &>/dev/null && [[ -f "$CACHE_FILE" ]]; then
+  if ! jq -e '.users' "$CACHE_FILE" &>/dev/null; then
+    _tmp=$(mktemp)
+    jq '. + {users: {}}' "$CACHE_FILE" > "$_tmp" && mv "$_tmp" "$CACHE_FILE"
+  fi
 fi
 
 usage() {
@@ -27,6 +35,8 @@ Commands:
   lookup-channel <name>       Find channel by name (cache-first, then API)
   lookup-chat <name>          Find chat by display name (cache-first, then API)
   lookup-team <name>          Find team by name (cache-first, then API)
+  lookup-user <name-or-email> Find user by name or email (cache-first, then API)
+  cache-user <email>          Fetch a user by email and cache them
   clear                       Delete the cache file
   show                        Print the cache
   age <section> <key>         Print seconds since last update (empty if never)
@@ -133,22 +143,10 @@ cmd_lookup_channel() {
   local query="$1"
   local cached
 
-  # Try exact match
   cached=$(cmd_get "channels" "$query" 2>/dev/null) && { echo "$cached"; return 0; }
-
-  # Try fuzzy match in cache
   cached=$(fuzzy_search "channels" "$query")
   [[ -n "$cached" ]] && { echo "$cached"; return 0; }
 
-  # Cache miss: refresh and retry
-  echo "Cache miss for channel '$query', refreshing..." >&2
-  cmd_populate
-  cached=$(cmd_get "channels" "$query" 2>/dev/null) && { echo "$cached"; return 0; }
-
-  cached=$(fuzzy_search "channels" "$query")
-  [[ -n "$cached" ]] && { echo "$cached"; return 0; }
-
-  echo "Channel '$query' not found" >&2
   return 1
 }
 
@@ -157,18 +155,9 @@ cmd_lookup_chat() {
   local cached
 
   cached=$(cmd_get "chats" "$query" 2>/dev/null) && { echo "$cached"; return 0; }
-
   cached=$(fuzzy_search "chats" "$query")
   [[ -n "$cached" ]] && { echo "$cached"; return 0; }
 
-  echo "Cache miss for chat '$query', refreshing..." >&2
-  cmd_populate
-  cached=$(cmd_get "chats" "$query" 2>/dev/null) && { echo "$cached"; return 0; }
-
-  cached=$(fuzzy_search "chats" "$query")
-  [[ -n "$cached" ]] && { echo "$cached"; return 0; }
-
-  echo "Chat '$query' not found" >&2
   return 1
 }
 
@@ -177,18 +166,52 @@ cmd_lookup_team() {
   local cached
 
   cached=$(cmd_get "teams" "$query" 2>/dev/null) && { echo "$cached"; return 0; }
-
   cached=$(fuzzy_search "teams" "$query")
   [[ -n "$cached" ]] && { echo "$cached"; return 0; }
 
-  echo "Cache miss for team '$query', refreshing..." >&2
-  cmd_populate
-  cached=$(cmd_get "teams" "$query" 2>/dev/null) && { echo "$cached"; return 0; }
+  return 1
+}
 
-  cached=$(fuzzy_search "teams" "$query")
+cmd_cache_user() {
+  require_jq
+  local email="$1"
+  local user_json
+  user_json=$(teams user get "$email" --output json 2>/dev/null) || { echo "Failed to look up $email" >&2; return 1; }
+
+  local name mri
+  name=$(echo "$user_json" | jq -r '.data.display_name // empty')
+  mri=$(echo "$user_json" | jq -r '.data.mri // empty')
+
+  if [[ -n "$name" && -n "$mri" ]]; then
+    # Store by display name and by email, value is "email|mri"
+    cmd_set "users" "$name" "${email}|${mri}"
+    cmd_set "users" "$email" "${email}|${mri}"
+    echo "${email}|${mri}"
+  else
+    echo "Could not resolve user '$email'" >&2
+    return 1
+  fi
+}
+
+cmd_lookup_user() {
+  local query="$1"
+  local cached
+
+  # Try exact match (by name or email)
+  cached=$(cmd_get "users" "$query" 2>/dev/null) && { echo "$cached"; return 0; }
+
+  # Try fuzzy match
+  cached=$(fuzzy_search "users" "$query")
   [[ -n "$cached" ]] && { echo "$cached"; return 0; }
 
-  echo "Team '$query' not found" >&2
+  # If query looks like an email, fetch directly
+  if [[ "$query" == *@* ]]; then
+    echo "Cache miss for user '$query', fetching..." >&2
+    cmd_cache_user "$query" && return 0
+    return 1
+  fi
+
+  echo "User '$query' not found in cache. Try: cache.sh cache-user <email>" >&2
   return 1
 }
 
@@ -201,6 +224,8 @@ case "${1:-}" in
   lookup-channel) shift; cmd_lookup_channel "$@" ;;
   lookup-chat)    shift; cmd_lookup_chat "$@" ;;
   lookup-team)    shift; cmd_lookup_team "$@" ;;
+  lookup-user)    shift; cmd_lookup_user "$@" ;;
+  cache-user)     shift; cmd_cache_user "$@" ;;
   clear)     rm -f "$CACHE_FILE"; echo "Cache cleared." ;;
   show)      cat "$CACHE_FILE" 2>/dev/null || echo "No cache." ;;
   *)         usage; exit 1 ;;

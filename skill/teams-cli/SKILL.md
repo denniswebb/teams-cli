@@ -51,6 +51,7 @@ bash ${CLAUDE_SKILL_DIR}/scripts/cache.sh populate
 bash ${CLAUDE_SKILL_DIR}/scripts/cache.sh lookup-channel "General"
 bash ${CLAUDE_SKILL_DIR}/scripts/cache.sh lookup-chat "John Smith"
 bash ${CLAUDE_SKILL_DIR}/scripts/cache.sh lookup-team "Engineering"
+bash ${CLAUDE_SKILL_DIR}/scripts/cache.sh lookup-user "chines@thig.com"
 ```
 
 Full cache docs are in `references/discovery.md`.

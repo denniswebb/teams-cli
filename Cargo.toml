@@ -1,6 +1,6 @@
 [package]
 name = "teams-cli"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "CLI for Microsoft Teams using Skype/CSA APIs"
 license = "MIT"
@@ -49,6 +49,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Error handling
 thiserror = "2"
 anyhow = "1"
+
+# Text processing
+regex = "1"
 
 # Misc
 dirs = "6"
