@@ -3,7 +3,6 @@ use std::io::Read;
 use std::time::Instant;
 
 use crate::api::messages::MessagesClient;
-use crate::api::mt::MtClient;
 use crate::api::HttpClient;
 use crate::auth::token::TokenSet;
 use crate::error::Result;
@@ -134,4 +133,92 @@ fn strip_html(html: &str) -> String {
         }
     }
     result.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_html_paragraph() {
+        assert_eq!(strip_html("<p>hello</p>"), "hello");
+    }
+
+    #[test]
+    fn strip_html_no_tags() {
+        assert_eq!(strip_html("no tags"), "no tags");
+    }
+
+    #[test]
+    fn strip_html_empty_string() {
+        assert_eq!(strip_html(""), "");
+    }
+
+    #[test]
+    fn strip_html_bold_and_italic() {
+        assert_eq!(
+            strip_html("<b>bold</b> and <i>italic</i>"),
+            "bold and italic"
+        );
+    }
+
+    #[test]
+    fn strip_html_nested_tags() {
+        assert_eq!(
+            strip_html("<div>nested<span>tags</span></div>"),
+            "nestedtags"
+        );
+    }
+
+    #[test]
+    fn strip_html_self_closing_tag() {
+        assert_eq!(strip_html("<br/>"), "");
+    }
+
+    #[test]
+    fn strip_html_multiple_self_closing() {
+        assert_eq!(strip_html("a<br/>b<hr/>c"), "abc");
+    }
+
+    #[test]
+    fn strip_html_angle_brackets_in_text() {
+        // "a < b > c" - the '<' starts a "tag", ' b ' is treated as tag content,
+        // '>' ends the "tag", then ' c' is text. So we lose ' b '.
+        // The result after trim is "a  c" (with the space before '<' and after '>').
+        let result = strip_html("a < b > c");
+        assert_eq!(result, "a  c");
+    }
+
+    #[test]
+    fn strip_html_unclosed_tag() {
+        // "unclosed <div tag" - '<' starts a tag, everything after is inside the tag
+        // because there's no closing '>'. So only "unclosed " is kept, trimmed to "unclosed".
+        let result = strip_html("unclosed <div tag");
+        assert_eq!(result, "unclosed");
+    }
+
+    #[test]
+    fn strip_html_complex_html() {
+        let html = "<html><body><h1>Title</h1><p>Some <b>bold</b> text</p></body></html>";
+        assert_eq!(strip_html(html), "TitleSome bold text");
+    }
+
+    #[test]
+    fn strip_html_with_attributes() {
+        assert_eq!(
+            strip_html(r#"<a href="https://example.com">link</a>"#),
+            "link"
+        );
+    }
+
+    #[test]
+    fn strip_html_whitespace_only_content() {
+        // After stripping tags, only whitespace remains -> trimmed to empty
+        assert_eq!(strip_html("<p>  </p>"), "");
+    }
+
+    #[test]
+    fn strip_html_preserves_inner_whitespace() {
+        assert_eq!(strip_html("<p>hello   world</p>"), "hello   world");
+    }
 }

@@ -66,3 +66,58 @@ fn to_camel_case(s: &str) -> String {
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn camel_case_display_name() {
+        assert_eq!(to_camel_case("display_name"), "displayName");
+    }
+
+    #[test]
+    fn camel_case_single_word() {
+        assert_eq!(to_camel_case("id"), "id");
+    }
+
+    #[test]
+    fn camel_case_thread_id() {
+        assert_eq!(to_camel_case("thread_id"), "threadId");
+    }
+
+    #[test]
+    fn camel_case_empty_string() {
+        assert_eq!(to_camel_case(""), "");
+    }
+
+    #[test]
+    fn camel_case_multiple_underscores() {
+        assert_eq!(to_camel_case("a_b_c"), "aBC");
+    }
+
+    #[test]
+    fn camel_case_trailing_underscore() {
+        // Trailing underscore: capitalize_next is set but no char follows
+        assert_eq!(to_camel_case("foo_"), "foo");
+    }
+
+    #[test]
+    fn camel_case_leading_underscore() {
+        // Leading underscore: first real char gets capitalized
+        assert_eq!(to_camel_case("_foo"), "Foo");
+    }
+
+    #[test]
+    fn camel_case_double_underscore() {
+        // Double underscore: second underscore sets capitalize_next again, net effect same
+        assert_eq!(to_camel_case("a__b"), "aB");
+    }
+
+    #[test]
+    fn camel_case_already_mixed() {
+        // "already_camelCase" -> underscore capitalizes 'c' -> "alreadyCamelCase"
+        // Note: the existing uppercase letters in "Case" are preserved as-is
+        assert_eq!(to_camel_case("already_camelCase"), "alreadyCamelCase");
+    }
+}

@@ -15,11 +15,19 @@ pub struct HttpClient {
     pub network: NetworkConfig,
 }
 
+fn truncate_body(body: String, max_len: usize) -> String {
+    if body.len() > max_len {
+        format!("{}... (truncated)", &body[..max_len])
+    } else {
+        body
+    }
+}
+
 impl HttpClient {
     pub fn new(network: &NetworkConfig) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(network.timeout))
-            .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) MicrosoftTeams-Insiders/1.5.00.25054 Chrome/91.0.4472.164 Electron/13.6.6 Safari/537.36")
+            .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Teams/24315.1101.3006.7571 Chrome/130.0.6723.191 Electron/33.3.1 Safari/537.36")
             .build()
             .expect("failed to build HTTP client");
 
@@ -38,7 +46,9 @@ impl HttpClient {
 
         for attempt in 0..max_attempts {
             if attempt > 0 {
-                let delay = Duration::from_secs(self.network.retry_backoff_base.pow(attempt - 1));
+                let delay = Duration::from_secs(
+                    self.network.retry_backoff_base.saturating_pow(attempt - 1),
+                );
                 let delay = delay.min(Duration::from_secs(30));
                 tracing::debug!("retry attempt {attempt}, waiting {delay:?}");
                 tokio::time::sleep(delay).await;
@@ -61,18 +71,22 @@ impl HttpClient {
                 StatusCode::UNAUTHORIZED => {
                     return Err(TeamsError::ApiError {
                         status: 401,
-                        message: resp.text().await.unwrap_or_default(),
+                        message: truncate_body(resp.text().await.unwrap_or_default(), 500),
                     });
                 }
 
                 StatusCode::FORBIDDEN => {
-                    return Err(TeamsError::PermissionDenied(
+                    return Err(TeamsError::PermissionDenied(truncate_body(
                         resp.text().await.unwrap_or_default(),
-                    ));
+                        500,
+                    )));
                 }
 
                 StatusCode::NOT_FOUND => {
-                    return Err(TeamsError::NotFound(resp.text().await.unwrap_or_default()));
+                    return Err(TeamsError::NotFound(truncate_body(
+                        resp.text().await.unwrap_or_default(),
+                        500,
+                    )));
                 }
 
                 StatusCode::TOO_MANY_REQUESTS => {
@@ -95,7 +109,7 @@ impl HttpClient {
                 }
 
                 s if s.is_server_error() => {
-                    let body = resp.text().await.unwrap_or_default();
+                    let body = truncate_body(resp.text().await.unwrap_or_default(), 500);
                     tracing::warn!("server error {s} (attempt {attempt}): {body}");
                     last_error = Some(TeamsError::ServerError {
                         status: s.as_u16(),
@@ -107,7 +121,7 @@ impl HttpClient {
                 s => {
                     return Err(TeamsError::ApiError {
                         status: s.as_u16(),
-                        message: resp.text().await.unwrap_or_default(),
+                        message: truncate_body(resp.text().await.unwrap_or_default(), 500),
                     });
                 }
             }
@@ -116,5 +130,34 @@ impl HttpClient {
         Err(last_error.unwrap_or_else(|| {
             TeamsError::Other(anyhow::anyhow!("request failed after all retries"))
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_body_shorter_than_max() {
+        let result = truncate_body("hello".to_string(), 10);
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn truncate_body_exactly_at_max() {
+        let result = truncate_body("1234567890".to_string(), 10);
+        assert_eq!(result, "1234567890");
+    }
+
+    #[test]
+    fn truncate_body_longer_than_max() {
+        let result = truncate_body("hello world, this is a long string".to_string(), 5);
+        assert_eq!(result, "hello... (truncated)");
+    }
+
+    #[test]
+    fn truncate_body_empty_string() {
+        let result = truncate_body(String::new(), 10);
+        assert_eq!(result, "");
     }
 }

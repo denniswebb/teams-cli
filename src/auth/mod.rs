@@ -4,8 +4,6 @@ pub mod token;
 #[allow(dead_code)]
 pub mod webview;
 
-use std::future::Future;
-
 use crate::error::{Result, TeamsError};
 use token::TokenSet;
 
@@ -51,6 +49,28 @@ pub fn resolve_tokens(profile: &str) -> Result<Option<TokenSet>> {
     Ok(fossteams_tokens)
 }
 
+fn check_fossteams_file_permissions(path: &std::path::Path) -> Result<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(path).map_err(|e| {
+            TeamsError::AuthError(format!("failed to stat {}: {e}", path.display()))
+        })?;
+        if meta.mode() & 0o077 != 0 {
+            tracing::warn!(
+                "skipping {}: file is accessible by other users",
+                path.display()
+            );
+            return Ok(false);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(true)
+}
+
 /// Check ~/.config/fossteams/ for tokens (backward compat with fossteams/teams-token)
 fn resolve_fossteams_tokens(profile: &str) -> Result<Option<TokenSet>> {
     let config_dir = dirs::home_dir()
@@ -63,6 +83,13 @@ fn resolve_fossteams_tokens(profile: &str) -> Result<Option<TokenSet>> {
     let chatsvcagg_path = config_dir.join("token-chatsvcagg.jwt");
 
     if !teams_path.exists() || !skype_path.exists() || !chatsvcagg_path.exists() {
+        return Ok(None);
+    }
+
+    if !check_fossteams_file_permissions(&teams_path)?
+        || !check_fossteams_file_permissions(&skype_path)?
+        || !check_fossteams_file_permissions(&chatsvcagg_path)?
+    {
         return Ok(None);
     }
 
@@ -111,27 +138,4 @@ async fn do_device_code_login(tenant: &str, profile: &str) -> Result<TokenSet> {
     let token_set = device_code::device_code_login(tenant, profile).await?;
     keyring::store_tokens(profile, &token_set)?;
     Ok(token_set)
-}
-
-/// Execute a function with automatic re-authentication on auth errors.
-pub async fn with_auto_reauth<T, F, Fut>(
-    profile: &str,
-    tenant: &str,
-    tokens: &mut TokenSet,
-    f: F,
-) -> Result<T>
-where
-    F: Fn(TokenSet) -> Fut,
-    Fut: Future<Output = Result<T>>,
-{
-    match f(tokens.clone()).await {
-        Ok(v) => Ok(v),
-        Err(e) if e.is_auth_error() => {
-            tracing::info!("auth error, attempting re-authentication...");
-            let new_tokens = do_device_code_login(tenant, profile).await?;
-            *tokens = new_tokens;
-            f(tokens.clone()).await
-        }
-        Err(e) => Err(e),
-    }
 }

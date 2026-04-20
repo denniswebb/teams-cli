@@ -126,6 +126,7 @@ pub async fn handle(args: &AuthArgs, profile: &str, format: OutputFormat) -> Res
                     )));
                 }
             };
+            eprintln!("warning: raw authentication token written to stdout");
             println!("{token}");
             Ok(())
         }

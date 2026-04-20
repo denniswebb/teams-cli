@@ -26,9 +26,10 @@ struct AuthState {
     chatsvcagg_token: Option<String>,
     tenant_id: String,
     redirect_count: u32,
+    expected_state: Option<String>,
 }
 
-fn build_auth_url(tenant: &str, response_type: &str, resource: Option<&str>) -> String {
+fn build_auth_url(tenant: &str, response_type: &str, resource: Option<&str>) -> (String, String) {
     let state = uuid::Uuid::new_v4().to_string();
     let nonce = uuid::Uuid::new_v4().to_string();
     let client_request_id = uuid::Uuid::new_v4().to_string();
@@ -49,14 +50,15 @@ fn build_auth_url(tenant: &str, response_type: &str, resource: Option<&str>) -> 
         url.push_str(&format!("&resource={res}"));
     }
 
-    url
+    (url, state)
 }
 
-fn extract_token_from_fragment(url_str: &str) -> Option<(String, bool)> {
+fn extract_token_from_fragment(url_str: &str) -> Option<(String, bool, Option<String>)> {
     let fragment = url_str.split('#').nth(1)?;
     let params = url::form_urlencoded::parse(fragment.as_bytes());
     let mut token = None;
     let mut is_id_token = false;
+    let mut state_param = None;
 
     for (key, value) in params {
         match key.as_ref() {
@@ -69,16 +71,40 @@ fn extract_token_from_fragment(url_str: &str) -> Option<(String, bool)> {
                     token = Some(value.to_string());
                 }
             }
+            "state" => {
+                state_param = Some(value.to_string());
+            }
             _ => {}
         }
     }
 
-    token.map(|t| (t, is_id_token))
+    token.map(|t| (t, is_id_token, state_param))
+}
+
+fn is_allowed_domain(url: &str) -> bool {
+    let allowed = [
+        "login.microsoftonline.com",
+        "login.microsoft.com",
+        "login.live.com",
+        "teams.microsoft.com",
+        "aadcdn.msauth.net",
+        "aadcdn.msftauth.net",
+    ];
+    if let Ok(parsed) = url::Url::parse(url) {
+        if let Some(host) = parsed.host_str() {
+            return allowed
+                .iter()
+                .any(|d| host == *d || host.ends_with(&format!(".{d}")));
+        }
+    }
+    false
 }
 
 /// Run the webview-based 3-token OAuth2 flow.
 /// Must be called from the main thread. Calls process::exit when done.
 pub fn webview_login(initial_tenant: &str, profile: &str) -> ! {
+    let (initial_url, initial_state) = build_auth_url(initial_tenant, "id_token", None);
+
     let state = Arc::new(Mutex::new(AuthState {
         phase: AuthPhase::Teams,
         teams_token: None,
@@ -86,6 +112,7 @@ pub fn webview_login(initial_tenant: &str, profile: &str) -> ! {
         chatsvcagg_token: None,
         tenant_id: initial_tenant.to_string(),
         redirect_count: 0,
+        expected_state: Some(initial_state),
     }));
 
     let profile = profile.to_string();
@@ -101,8 +128,6 @@ pub fn webview_login(initial_tenant: &str, profile: &str) -> ! {
         .build(&event_loop)
         .expect("failed to create window");
 
-    let initial_url = build_auth_url(initial_tenant, "id_token", None);
-
     let state_for_nav = state.clone();
     let proxy_for_nav = proxy.clone();
 
@@ -110,19 +135,38 @@ pub fn webview_login(initial_tenant: &str, profile: &str) -> ! {
         .with_url(&initial_url)
         .with_navigation_handler(move |url: String| {
             if !url.starts_with("https://teams.microsoft.com/go") {
-                return true; // Allow all non-redirect navigation
+                if !is_allowed_domain(&url) {
+                    tracing::warn!("blocked navigation to disallowed domain: {url}");
+                    return false;
+                }
+                return true;
             }
 
-            let Some((token, is_id_token)) = extract_token_from_fragment(&url) else {
-                return false; // Block redirect but no token found
+            let Some((token, is_id_token, returned_state)) = extract_token_from_fragment(&url)
+            else {
+                return false;
             };
 
-            let mut auth = state_for_nav.lock().unwrap();
+            let mut auth = state_for_nav.lock().unwrap_or_else(|e| e.into_inner());
             auth.redirect_count += 1;
 
             if auth.redirect_count > 10 {
                 let _ = proxy_for_nav.send_event("error:too many redirects".into());
                 return false;
+            }
+
+            if let Some(ref expected) = auth.expected_state {
+                match returned_state {
+                    Some(ref rs) if rs != expected => {
+                        tracing::warn!("OAuth state mismatch: expected={expected}, got={rs}");
+                        return false;
+                    }
+                    None => {
+                        tracing::warn!("OAuth response missing state parameter");
+                        return false;
+                    }
+                    _ => {}
+                }
             }
 
             match auth.phase {
@@ -137,21 +181,24 @@ pub fn webview_login(initial_tenant: &str, profile: &str) -> ! {
                         }
                         auth.teams_token = Some(token);
                         auth.phase = AuthPhase::Skype;
-                        let next_url =
+                        let (next_url, next_state) =
                             build_auth_url(&auth.tenant_id, "token", Some(SKYPE_RESOURCE));
+                        auth.expected_state = Some(next_state);
                         let _ = proxy_for_nav.send_event(format!("navigate:{next_url}"));
                     }
                 }
                 AuthPhase::Skype => {
                     auth.skype_token = Some(token);
                     auth.phase = AuthPhase::ChatSvcAgg;
-                    let next_url =
+                    let (next_url, next_state) =
                         build_auth_url(&auth.tenant_id, "token", Some(CHATSVCAGG_RESOURCE));
+                    auth.expected_state = Some(next_state);
                     let _ = proxy_for_nav.send_event(format!("navigate:{next_url}"));
                 }
                 AuthPhase::ChatSvcAgg => {
                     auth.chatsvcagg_token = Some(token);
                     auth.phase = AuthPhase::Done;
+                    auth.expected_state = None;
                     let _ = proxy_for_nav.send_event("done".into());
                 }
                 AuthPhase::Done => {}
@@ -176,7 +223,7 @@ pub fn webview_login(initial_tenant: &str, profile: &str) -> ! {
                         std::process::exit(3);
                     }
                 } else if msg == "done" {
-                    let auth = state_for_loop.lock().unwrap();
+                    let auth = state_for_loop.lock().unwrap_or_else(|e| e.into_inner());
                     match build_token_set(&auth, &profile) {
                         Ok(token_set) => {
                             if let Err(e) = crate::auth::keyring::store_tokens(&profile, &token_set)
@@ -203,7 +250,7 @@ pub fn webview_login(initial_tenant: &str, profile: &str) -> ! {
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
-                let auth = state_for_loop.lock().unwrap();
+                let auth = state_for_loop.lock().unwrap_or_else(|e| e.into_inner());
                 if auth.phase == AuthPhase::Done {
                     match build_token_set(&auth, &profile) {
                         Ok(token_set) => {

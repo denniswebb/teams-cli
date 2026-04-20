@@ -36,10 +36,11 @@ impl<'a> MtClient<'a> {
     }
 
     pub async fn get_user(&self, email: &str) -> Result<User> {
+        let encoded_email = urlencoding::encode(email);
         let url = format!(
             "{}/users/{}/?throwIfNotFound=false&isMailAddress=true&enableGuest=true&includeIBBarredUsers=true&skypeTeamsInfo=true",
             self.base_url(),
-            email,
+            encoded_email,
         );
         let bearer = self.tokens.skype_bearer();
 
@@ -122,5 +123,62 @@ impl<'a> MtClient<'a> {
                 status: 0,
                 message: format!("failed to parse domains: {e}"),
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::token::{TokenInfo, TokenType};
+    use crate::config::NetworkConfig;
+
+    fn dummy_token_info() -> TokenInfo {
+        TokenInfo {
+            raw: String::new(),
+            token_type: TokenType::AccessToken,
+            expires_at: None,
+            audience: String::new(),
+        }
+    }
+
+    fn dummy_token_set() -> TokenSet {
+        TokenSet {
+            teams: dummy_token_info(),
+            skype: dummy_token_info(),
+            chatsvcagg: dummy_token_info(),
+            profile: String::new(),
+            tenant_id: String::new(),
+        }
+    }
+
+    #[test]
+    fn base_url_with_full_http_region() {
+        let http = HttpClient::new(&NetworkConfig::default());
+        let tokens = dummy_token_set();
+        let client = MtClient::new(&http, &tokens, "https://teams.microsoft.com/api/mt/amer");
+        assert_eq!(
+            client.base_url(),
+            "https://teams.microsoft.com/api/mt/amer/beta"
+        );
+    }
+
+    #[test]
+    fn base_url_with_plain_region() {
+        let http = HttpClient::new(&NetworkConfig::default());
+        let tokens = dummy_token_set();
+        let client = MtClient::new(&http, &tokens, "amer");
+        assert_eq!(
+            client.base_url(),
+            "https://teams.microsoft.com/api/mt/amer/beta"
+        );
+    }
+
+    #[test]
+    fn base_url_with_trailing_slash_region() {
+        let http = HttpClient::new(&NetworkConfig::default());
+        let tokens = dummy_token_set();
+        let client = MtClient::new(&http, &tokens, "https://example.com/");
+        // Documents current behavior: trailing slash results in "/beta" appended
+        assert_eq!(client.base_url(), "https://example.com//beta");
     }
 }

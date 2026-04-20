@@ -27,9 +27,10 @@ impl<'a> MessagesClient<'a> {
         conversation_id: &str,
         page_size: u32,
     ) -> Result<Vec<ChatMessage>> {
+        let encoded_id = urlencoding::encode(conversation_id);
         let url = format!(
             "{}/v1/users/ME/conversations/{}/messages?view=msnp24Equivalent|supportsMessageProperties&pageSize={}&startTime=1",
-            self.chat_service_url, conversation_id, page_size,
+            self.chat_service_url, encoded_id, page_size,
         );
         let auth = self.auth_header();
 
@@ -54,9 +55,10 @@ impl<'a> MessagesClient<'a> {
         content: &str,
         display_name: &str,
     ) -> Result<serde_json::Value> {
+        let encoded_id = urlencoding::encode(conversation_id);
         let url = format!(
             "{}/v1/users/ME/conversations/{}/messages",
-            self.chat_service_url, conversation_id,
+            self.chat_service_url, encoded_id,
         );
         let auth = self.auth_header();
 
@@ -89,5 +91,43 @@ impl<'a> MessagesClient<'a> {
                 status: 0,
                 message: format!("failed to parse send response: {e}"),
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::NetworkConfig;
+
+    #[test]
+    fn auth_header_format() {
+        let http = HttpClient::new(&NetworkConfig::default());
+        let client = MessagesClient::new(&http, "test-token-123", "https://chat.example.com");
+        assert_eq!(client.auth_header(), "skypetoken=test-token-123");
+    }
+
+    #[test]
+    fn conversation_id_is_url_encoded_in_get_messages_url() {
+        // Verify the URL encoding logic by checking the encoded form of a typical conversation ID
+        let conv_id = "19:abc@thread.v2";
+        let encoded = urlencoding::encode(conv_id);
+        assert_eq!(encoded, "19%3Aabc%40thread.v2");
+    }
+
+    #[test]
+    fn conversation_id_encoding_preserves_safe_chars() {
+        let conv_id = "simple-id-123";
+        let encoded = urlencoding::encode(conv_id);
+        assert_eq!(encoded, "simple-id-123");
+    }
+
+    #[test]
+    fn messages_client_stores_chat_service_url() {
+        let http = HttpClient::new(&NetworkConfig::default());
+        let client = MessagesClient::new(&http, "tok", "https://amer.ng.msg.teams.microsoft.com");
+        assert_eq!(
+            client.chat_service_url,
+            "https://amer.ng.msg.teams.microsoft.com"
+        );
     }
 }

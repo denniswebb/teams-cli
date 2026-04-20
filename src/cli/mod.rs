@@ -10,7 +10,11 @@ pub mod user;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "teams", about = "CLI for Microsoft Teams", version)]
+#[command(
+    name = "teams",
+    about = "CLI for Microsoft Teams (using internal Skype/CSA APIs)",
+    version
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -47,9 +51,9 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub retry: Option<u32>,
 
-    /// Auto re-authenticate if token expired
-    #[arg(long, global = true, default_value = "true")]
-    pub auto_login: bool,
+    /// Disable automatic login when tokens are missing or expired
+    #[arg(long = "no-auto-login", global = true)]
+    pub no_auto_login: bool,
 }
 
 #[derive(Subcommand)]

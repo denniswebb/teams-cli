@@ -20,10 +20,11 @@ cargo clippy --all-targets -- -D warnings
 ```
 src/
   main.rs           -- Entry point. Webview login runs before tokio starts (main thread requirement).
+                       Auto-login before commands (no retry on failure). NO_COLOR handling.
   error.rs          -- TeamsError enum with deterministic exit codes (0-10).
-  config.rs         -- TOML config at ~/.config/teams-cli/config.toml
+  config.rs         -- TOML config at ~/.config/teams-cli/config.toml. Sentinel-based defaults.
   cli/              -- clap command definitions and handlers
-    mod.rs          -- Cli struct, Commands enum, global flags
+    mod.rs          -- Cli struct, Commands enum, global flags (--no-auto-login, --no-color, etc.)
     auth.rs         -- login (webview/device-code), status, logout, token
     user.rs         -- me, get, search
     team.rs         -- list, get
@@ -37,15 +38,25 @@ src/
     token.rs        -- TokenSet, TokenInfo, JWT decode, constants
     webview.rs      -- tao/wry webview for 3-token OAuth2 implicit flow (diverges via process::exit)
     device_code.rs  -- OAuth2 device code flow fallback for headless
-    keyring.rs      -- File-based token storage at ~/.config/teams-cli/tokens/<profile>.json
+    keyring.rs      -- File-based token storage at ~/.config/teams-cli/tokens/<profile>.json (0600/0700)
   api/
-    mod.rs          -- HttpClient with retry/backoff
+    mod.rs          -- HttpClient with retry/backoff, percent-encoded URL params, domain-validated authz
     authz.rs        -- Token exchange: POST authsvc/v1.0/authz -> skypeToken + regionGtms
     csa.rs          -- Chat Service Aggregator: teams, channels, chats
     messages.rs     -- Messages API: read/write messages (uses authz skypeToken)
-    mt.rs           -- MiddleTier: user profiles, tenants (uses OAuth skype Bearer token)
+    mt.rs           -- MiddleTier: user profiles, tenants (uses authz-discovered MT URL)
   models/           -- Serde structs for API responses
+    mod.rs          -- Re-exports
+    chat.rs         -- Chat thread models
+    conversation.rs -- Conversation/thread models
+    message.rs      -- Message models
+    team.rs         -- Team/channel models
+    user.rs         -- User/tenant models
   output/           -- JSON envelope, table, plain text formatters
+    mod.rs          -- OutputFormat enum (detect errors on unrecognized format strings)
+    json.rs         -- JSON envelope formatter
+    table.rs        -- Human-readable table formatter
+    plain.rs        -- Tab-separated plain text formatter
 ```
 
 ## Authentication Flow
@@ -53,17 +64,31 @@ src/
 1. **Webview login** (`teams auth login`): Opens native webview via tao/wry,
    navigates to `login.microsoftonline.com/oauth2/authorize` three times to
    capture Teams id_token, Skype access_token, and ChatSvcAgg access_token via
-   OAuth2 implicit flow. Tokens stored to file.
+   OAuth2 implicit flow. Tokens stored to file (0600 permissions, 0700 directory).
 
 2. **Authz exchange** (on every API command): POST to
    `teams.microsoft.com/api/authsvc/v1.0/authz` with the OAuth Skype token.
    Returns a messaging-capable `skypeToken` (24h TTL) and `regionGtms` with
-   correct regional base URLs.
+   correct regional base URLs. Authz URLs are validated against Microsoft/Skype
+   domains.
 
-3. **Token usage by service**:
+3. **Auto-login**: If tokens are missing or expired, the CLI attempts
+   authentication before running the command (unless `--no-auto-login` is set).
+   The CLI does not retry commands that fail mid-execution.
+
+4. **Token usage by service**:
    - CSA: `Authorization: Bearer {chatsvcagg_token}` (OAuth token)
    - Messages: `Authentication: skypetoken={authz_skype_token}` (exchanged token)
    - MiddleTier: `Authorization: Bearer {oauth_skype_token}` (OAuth token)
+
+## Security Notes
+
+- Profile names are validated (alphanumeric, dash, underscore only).
+- URL parameters are percent-encoded.
+- Authz URLs are validated against Microsoft/Skype domains.
+- API error bodies are truncated to 500 chars.
+- JWT tokens are redacted in debug output.
+- Token files use 0600 permissions, token directories use 0700.
 
 ## Key Constants
 
@@ -76,9 +101,9 @@ src/
 - The Messages API uses `Authentication:` header (not `Authorization:`).
 - The `messagetype` for plain text is `"Text"`, for HTML is `"RichText/Html"`.
 - The `clientmessageid` is a Unix timestamp in milliseconds (as string).
-- Region is auto-discovered via authz (e.g., `amer`, `emea`, `apac`).
-  The `--region` CLI flag is only used as fallback for tenant commands
-  when authz isn't called.
+- Region is auto-discovered via authz for all commands (including tenants).
+  The `--region` CLI flag is only used as a fallback hint if authz hasn't
+  been called or fails.
 - The CSA API returns large JSON (~4MB for 700+ chats). Models use
   `serde_json::Value` for flexibility since field shapes vary.
 - The MT `/users/me` endpoint doesn't exist. `get_me()` extracts the

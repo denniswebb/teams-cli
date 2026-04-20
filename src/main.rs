@@ -29,7 +29,18 @@ fn main() {
         .with_writer(std::io::stderr)
         .init();
 
-    let format = OutputFormat::detect(cli.output.as_deref());
+    // DOC-6: Make --no-color functional via the NO_COLOR convention
+    if cli.no_color || std::env::var("NO_COLOR").is_ok() {
+        std::env::set_var("NO_COLOR", "1");
+    }
+
+    let format = match OutputFormat::detect(cli.output.as_deref()) {
+        Ok(f) => f,
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            std::process::exit(2);
+        }
+    };
 
     // Webview login must run on the main thread (tao/wry requirement).
     if let Commands::Auth(ref auth_args) = cli.command {
@@ -54,8 +65,16 @@ fn main() {
 async fn run(cli: Cli, format: OutputFormat) -> error::Result<()> {
     let cfg = config::Config::load()?;
 
-    let profile = &cli.profile;
-    let region = &cli.region;
+    let profile = if cli.profile == "default" {
+        &cfg.default.profile
+    } else {
+        &cli.profile
+    };
+    let _region = if cli.region == "emea" {
+        &cfg.default.region
+    } else {
+        &cli.region
+    };
 
     let network = config::NetworkConfig {
         timeout: cli.timeout.unwrap_or(cfg.network.timeout),
@@ -75,7 +94,7 @@ async fn run(cli: Cli, format: OutputFormat) -> error::Result<()> {
         // All other commands need auth + authz token exchange
         cmd => {
             let tenant = cfg.profile(profile).tenant_id.clone();
-            let tokens = auth::get_or_login(profile, &tenant, cli.auto_login).await?;
+            let tokens = auth::get_or_login(profile, &tenant, !cli.no_auto_login).await?;
             let http = api::HttpClient::new(&network);
 
             // Exchange OAuth token for messaging skype token + discover region
@@ -103,7 +122,7 @@ async fn run(cli: Cli, format: OutputFormat) -> error::Result<()> {
                     .await
                 }
                 Commands::Tenant(args) => {
-                    cli::tenant::handle(args, &tokens, &http, region, format).await
+                    cli::tenant::handle(args, &tokens, &http, mt_url, format).await
                 }
                 _ => unreachable!(),
             }
