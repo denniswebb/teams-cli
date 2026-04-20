@@ -1,0 +1,144 @@
+use clap::{Args, Subcommand};
+
+use crate::auth;
+use crate::auth::token::{extract_username, TokenSet};
+use crate::error::Result;
+use crate::output::{self, OutputFormat};
+
+#[derive(Args)]
+pub struct AuthArgs {
+    #[command(subcommand)]
+    pub command: AuthCommand,
+}
+
+#[derive(Subcommand)]
+pub enum AuthCommand {
+    /// Authenticate with Microsoft Teams
+    Login {
+        /// Use device code flow (for headless environments)
+        #[arg(long)]
+        device_code: bool,
+        /// Tenant ID or 'common'
+        #[arg(long, default_value = "common")]
+        tenant: String,
+    },
+    /// Show current authentication status
+    Status,
+    /// Clear stored credentials
+    Logout {
+        /// Clear all profiles
+        #[arg(long)]
+        all: bool,
+    },
+    /// Print raw access token for scripting
+    Token {
+        /// Which token to print: teams, skype, chatsvcagg
+        #[arg(default_value = "skype")]
+        token_type: String,
+    },
+}
+
+pub async fn handle(args: &AuthArgs, profile: &str, format: OutputFormat) -> Result<()> {
+    match &args.command {
+        AuthCommand::Login {
+            device_code,
+            tenant,
+        } => {
+            if *device_code {
+                eprintln!("Starting device code login flow...");
+                let token_set = auth::device_code::device_code_login(tenant, profile).await?;
+                auth::keyring::store_tokens(profile, &token_set)?;
+                print_login_success(&token_set, format);
+            } else {
+                // Webview login — must be on main thread
+                // For now, fall back to device code with a message
+                eprintln!("Webview login requires running on the main thread.");
+                eprintln!("Falling back to device code flow...");
+                let token_set = auth::device_code::device_code_login(tenant, profile).await?;
+                auth::keyring::store_tokens(profile, &token_set)?;
+                print_login_success(&token_set, format);
+            }
+            Ok(())
+        }
+
+        AuthCommand::Status => {
+            match auth::resolve_tokens(profile)? {
+                Some(ts) => {
+                    let username =
+                        extract_username(&ts.teams.raw).unwrap_or_else(|_| "unknown".into());
+
+                    let status = serde_json::json!({
+                        "logged_in": true,
+                        "profile": ts.profile,
+                        "username": username,
+                        "tenant_id": ts.tenant_id,
+                        "teams_token": {
+                            "expired": ts.teams.is_expired(),
+                            "expires_at": ts.teams.expires_at.map(|t| t.to_rfc3339()),
+                        },
+                        "skype_token": {
+                            "expired": ts.skype.is_expired(),
+                            "expires_at": ts.skype.expires_at.map(|t| t.to_rfc3339()),
+                        },
+                        "chatsvcagg_token": {
+                            "expired": ts.chatsvcagg.is_expired(),
+                            "expires_at": ts.chatsvcagg.expires_at.map(|t| t.to_rfc3339()),
+                        },
+                    });
+                    output::print_output(format, status, 0);
+                }
+                None => {
+                    let status = serde_json::json!({
+                        "logged_in": false,
+                        "profile": profile,
+                    });
+                    output::print_output(format, status, 0);
+                }
+            }
+            Ok(())
+        }
+
+        AuthCommand::Logout { all } => {
+            if *all {
+                let profiles = auth::keyring::list_profiles()?;
+                for p in &profiles {
+                    auth::keyring::delete_tokens(p)?;
+                }
+                eprintln!("Logged out of all profiles");
+            } else {
+                auth::keyring::delete_tokens(profile)?;
+                eprintln!("Logged out of profile '{profile}'");
+            }
+            Ok(())
+        }
+
+        AuthCommand::Token { token_type } => {
+            let ts = auth::resolve_tokens(profile)?
+                .ok_or_else(|| crate::error::TeamsError::AuthError("not logged in".into()))?;
+
+            let token = match token_type.as_str() {
+                "teams" => &ts.teams.raw,
+                "skype" => &ts.skype.raw,
+                "chatsvcagg" => &ts.chatsvcagg.raw,
+                other => {
+                    return Err(crate::error::TeamsError::InvalidInput(format!(
+                        "unknown token type: {other} (use teams, skype, or chatsvcagg)"
+                    )));
+                }
+            };
+            println!("{token}");
+            Ok(())
+        }
+    }
+}
+
+fn print_login_success(token_set: &TokenSet, format: OutputFormat) {
+    let username = extract_username(&token_set.teams.raw).unwrap_or_else(|_| "unknown".into());
+    let result = serde_json::json!({
+        "status": "authenticated",
+        "profile": token_set.profile,
+        "username": username,
+        "tenant_id": token_set.tenant_id,
+    });
+    output::print_output(format, result, 0);
+}
