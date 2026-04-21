@@ -1,9 +1,10 @@
 use clap::{Args, Subcommand};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::time::Instant;
 
 use crate::api::blob::BlobClient;
 use crate::api::messages::MessagesClient;
+use crate::api::subscribe::SubscriptionClient;
 use crate::api::HttpClient;
 use crate::auth::token::TokenSet;
 use crate::error::Result;
@@ -68,6 +69,14 @@ pub enum MessageCommand {
         /// Reaction type to remove: like, heart, laugh, surprised, sad, angry
         #[arg(long)]
         reaction: String,
+    },
+    /// Subscribe to real-time messages (NDJSON output, one event per line)
+    Subscribe {
+        /// Conversation ID to watch (omit for all conversations)
+        conversation_id: Option<String>,
+        /// Filter to only message events (skip typing, presence, etc.)
+        #[arg(long, default_value = "false")]
+        messages_only: bool,
     },
 }
 
@@ -227,6 +236,12 @@ pub async fn handle(
             });
             output::print_output(format, result, start.elapsed().as_millis() as u64);
         }
+        MessageCommand::Subscribe {
+            conversation_id,
+            messages_only,
+        } => {
+            run_subscribe(ctx, conversation_id.as_deref(), *messages_only).await?;
+        }
     }
     Ok(())
 }
@@ -321,6 +336,140 @@ fn parse_and_rewrite_mentions(content: &str) -> (String, Option<String>) {
 
     let mentions_json = serde_json::to_string(&mentions_arr).expect("serialize mentions");
     (rewritten, Some(mentions_json))
+}
+
+/// Message event resource types we care about for --messages-only filtering.
+const MESSAGE_RESOURCE_TYPES: &[&str] = &["NewMessage", "MessageUpdate"];
+
+/// Run the subscribe loop: register endpoint, create subscription, poll forever.
+/// Outputs NDJSON (one JSON object per line) to stdout.
+async fn run_subscribe(
+    ctx: &MessageContext<'_>,
+    conversation_id: Option<&str>,
+    messages_only: bool,
+) -> Result<()> {
+    let sub_client = SubscriptionClient::new(ctx.http, ctx.messaging_token, ctx.chat_service_url);
+
+    eprintln!("Registering endpoint {}...", &sub_client.endpoint_id()[..8]);
+    sub_client.register_endpoint().await?;
+
+    let target = conversation_id.unwrap_or("ALL");
+    eprintln!("Subscribing to events for: {target}");
+    sub_client.create_subscription(conversation_id).await?;
+
+    eprintln!("Listening for events (Ctrl+C to stop)...");
+
+    let mut stdout = std::io::stdout().lock();
+    let mut consecutive_errors: u32 = 0;
+    const MAX_CONSECUTIVE_ERRORS: u32 = 10;
+
+    loop {
+        match sub_client.poll().await {
+            Ok(events) => {
+                consecutive_errors = 0;
+                for event in events {
+                    if messages_only
+                        && !MESSAGE_RESOURCE_TYPES.contains(&event.resource_type.as_str())
+                    {
+                        continue;
+                    }
+
+                    let ndjson_event = format_event(&event, conversation_id);
+                    if let Err(e) = writeln!(stdout, "{}", ndjson_event) {
+                        if e.kind() == std::io::ErrorKind::BrokenPipe {
+                            tracing::debug!("stdout closed (broken pipe), exiting");
+                            return Ok(());
+                        }
+                        return Err(crate::error::TeamsError::Other(anyhow::anyhow!(
+                            "write error: {e}"
+                        )));
+                    }
+                    let _ = stdout.flush();
+                }
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+
+                // Poll timeout is normal — just loop again
+                if err_str.contains("poll_timeout") {
+                    tracing::debug!("poll timeout, reconnecting...");
+                    continue;
+                }
+
+                // 404 means endpoint expired — re-register
+                if err_str.contains("404") || err_str.contains("re-register") {
+                    eprintln!("Endpoint expired, re-registering...");
+                    if let Err(re) = sub_client.register_endpoint().await {
+                        eprintln!("Re-register failed: {re}");
+                        consecutive_errors += 1;
+                    } else if let Err(se) = sub_client.create_subscription(conversation_id).await {
+                        eprintln!("Re-subscribe failed: {se}");
+                        consecutive_errors += 1;
+                    } else {
+                        consecutive_errors = 0;
+                        eprintln!("Re-registered, resuming...");
+                        continue;
+                    }
+                } else {
+                    consecutive_errors += 1;
+                    tracing::warn!(
+                        "poll error ({consecutive_errors}/{MAX_CONSECUTIVE_ERRORS}): {e}"
+                    );
+                }
+
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                    return Err(crate::error::TeamsError::Other(anyhow::anyhow!(
+                        "too many consecutive poll errors ({MAX_CONSECUTIVE_ERRORS}), giving up"
+                    )));
+                }
+
+                // Back off before retrying
+                let delay =
+                    std::time::Duration::from_secs(2u64.saturating_pow(consecutive_errors.min(5)));
+                tracing::debug!("backing off {delay:?} before next poll");
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+}
+
+/// Format a poll event into a compact NDJSON line.
+fn format_event(
+    event: &crate::api::subscribe::EventMessage,
+    filter_conversation: Option<&str>,
+) -> String {
+    let resource = &event.resource;
+
+    // Extract conversation ID from resource or resource_link
+    let conversation_id = resource
+        .get("conversationid")
+        .or_else(|| resource.get("conversationId"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    // Build a normalized output event
+    let output = serde_json::json!({
+        "event_type": event.resource_type,
+        "event_id": event.id,
+        "time": event.time,
+        "conversation_id": if conversation_id.is_empty() {
+            filter_conversation.unwrap_or("").to_string()
+        } else {
+            conversation_id
+        },
+        "from": resource.get("imdisplayname")
+            .or_else(|| resource.get("imDisplayName"))
+            .unwrap_or(&serde_json::Value::Null),
+        "content": resource.get("content").unwrap_or(&serde_json::Value::Null),
+        "message_type": resource.get("messagetype")
+            .or_else(|| resource.get("messageType"))
+            .unwrap_or(&serde_json::Value::Null),
+        "message_id": resource.get("id").unwrap_or(&serde_json::Value::Null),
+        "resource": resource,
+    });
+
+    serde_json::to_string(&output).unwrap_or_else(|_| "{}".to_string())
 }
 
 fn strip_html(html: &str) -> String {
@@ -509,5 +658,95 @@ mod tests {
     #[test]
     fn strip_html_preserves_inner_whitespace() {
         assert_eq!(strip_html("<p>hello   world</p>"), "hello   world");
+    }
+
+    // --- format_event() ---
+
+    #[test]
+    fn format_event_new_message() {
+        let event = crate::api::subscribe::EventMessage {
+            id: 42,
+            event_type: "EventMessage".to_string(),
+            resource_type: "NewMessage".to_string(),
+            time: "2024-01-01T00:00:00Z".to_string(),
+            resource_link: "/v1/users/ME/conversations/19:abc/messages/1234".to_string(),
+            resource: serde_json::json!({
+                "id": "1234",
+                "content": "Hello world",
+                "messagetype": "Text",
+                "imdisplayname": "Dennis Webb",
+                "conversationid": "19:abc@thread.v2",
+            }),
+        };
+        let line = format_event(&event, None);
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed["event_type"], "NewMessage");
+        assert_eq!(parsed["event_id"], 42);
+        assert_eq!(parsed["from"], "Dennis Webb");
+        assert_eq!(parsed["content"], "Hello world");
+        assert_eq!(parsed["conversation_id"], "19:abc@thread.v2");
+        assert_eq!(parsed["message_id"], "1234");
+        assert_eq!(parsed["message_type"], "Text");
+    }
+
+    #[test]
+    fn format_event_uses_filter_conversation_as_fallback() {
+        let event = crate::api::subscribe::EventMessage {
+            id: 1,
+            event_type: "EventMessage".to_string(),
+            resource_type: "NewMessage".to_string(),
+            time: "".to_string(),
+            resource_link: "".to_string(),
+            resource: serde_json::json!({"content": "hi"}),
+        };
+        let line = format_event(&event, Some("19:fallback@thread.v2"));
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed["conversation_id"], "19:fallback@thread.v2");
+    }
+
+    #[test]
+    fn format_event_camel_case_fields() {
+        let event = crate::api::subscribe::EventMessage {
+            id: 1,
+            event_type: "EventMessage".to_string(),
+            resource_type: "NewMessage".to_string(),
+            time: "".to_string(),
+            resource_link: "".to_string(),
+            resource: serde_json::json!({
+                "conversationId": "19:camel@thread.v2",
+                "imDisplayName": "User",
+                "messageType": "Text",
+            }),
+        };
+        let line = format_event(&event, None);
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed["conversation_id"], "19:camel@thread.v2");
+        assert_eq!(parsed["from"], "User");
+        assert_eq!(parsed["message_type"], "Text");
+    }
+
+    #[test]
+    fn format_event_is_valid_json() {
+        let event = crate::api::subscribe::EventMessage {
+            id: 99,
+            event_type: "EventMessage".to_string(),
+            resource_type: "ThreadUpdate".to_string(),
+            time: "2024-06-15T12:00:00Z".to_string(),
+            resource_link: "".to_string(),
+            resource: serde_json::json!({}),
+        };
+        let line = format_event(&event, None);
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&line).is_ok(),
+            "format_event must produce valid JSON"
+        );
+    }
+
+    #[test]
+    fn message_resource_types_filter() {
+        assert!(MESSAGE_RESOURCE_TYPES.contains(&"NewMessage"));
+        assert!(MESSAGE_RESOURCE_TYPES.contains(&"MessageUpdate"));
+        assert!(!MESSAGE_RESOURCE_TYPES.contains(&"ThreadUpdate"));
+        assert!(!MESSAGE_RESOURCE_TYPES.contains(&"TypingIndicator"));
     }
 }

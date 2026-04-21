@@ -84,6 +84,34 @@ echo "piped message" | teams message send <conversation-id> --stdin
 teams message get <conversation-id> <message-id>
 ```
 
+### Real-time Subscription
+
+Subscribe to incoming messages via long-poll. Events are output as NDJSON
+(one JSON object per line), suitable for piping to other tools or Claude Code.
+
+```sh
+# Watch a specific conversation
+teams message subscribe <conversation-id>
+
+# Watch all conversations (messages only)
+teams message subscribe --messages-only
+
+# Pipe to jq for pretty-printing
+teams message subscribe <conversation-id> --messages-only | jq .
+
+# Pipe to a file for later processing
+teams message subscribe --messages-only > events.jsonl
+```
+
+Each line is a self-contained JSON object:
+
+```json
+{"event_type":"NewMessage","event_id":42,"time":"2024-01-01T00:00:00Z","conversation_id":"19:abc@thread.v2","from":"Dennis Webb","content":"Hello","message_type":"Text","message_id":"1234","resource":{...}}
+```
+
+Status messages (endpoint registration, errors) go to stderr so they don't
+pollute the NDJSON stream on stdout.
+
 ### Users
 
 ```sh

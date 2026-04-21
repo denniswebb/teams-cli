@@ -30,7 +30,7 @@ src/
     team.rs         -- list, get
     channel.rs      -- list, get, pinned
     chat.rs         -- list (--all for hidden), get
-    message.rs      -- list, send (--body or --stdin), get
+    message.rs      -- list, send (--body or --stdin), get, subscribe (NDJSON long-poll)
     tenant.rs       -- list, domains
     config_cmd.rs   -- init, show, set, path
   auth/
@@ -44,6 +44,7 @@ src/
     authz.rs        -- Token exchange: POST authsvc/v1.0/authz -> skypeToken + regionGtms
     csa.rs          -- Chat Service Aggregator: teams, channels, chats
     messages.rs     -- Messages API: read/write messages (uses authz skypeToken)
+    subscribe.rs    -- Real-time subscription: endpoint registration, long-poll for events (NDJSON)
     mt.rs           -- MiddleTier: user profiles, tenants (uses authz-discovered MT URL)
   models/           -- Serde structs for API responses
     mod.rs          -- Re-exports
@@ -108,6 +109,21 @@ src/
   `serde_json::Value` for flexibility since field shapes vary.
 - The MT `/users/me` endpoint doesn't exist. `get_me()` extracts the
   UPN from the JWT and calls `get_user(email)`.
+
+## Real-time Subscription
+
+The `subscribe` command uses the Skype chat service's endpoint/subscription/poll
+mechanism for real-time events:
+
+1. **Register endpoint**: `POST /v1/users/ME/endpoints` with a generated UUID
+2. **Create subscription**: `POST /v1/users/ME/endpoints/{id}/subscriptions`
+   with `channelType: httpLongPoll` and interested resource filters
+3. **Poll loop**: `GET /v1/users/ME/endpoints/{id}/subscriptions/0/poll`
+   (blocks ~30s until events arrive, then returns immediately)
+
+Events are output as NDJSON to stdout. Status/errors go to stderr.
+If the endpoint expires (404 on poll), it auto-re-registers.
+Exponential backoff on consecutive errors, gives up after 10.
 
 ## Conversation IDs
 
