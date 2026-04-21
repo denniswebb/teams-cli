@@ -49,6 +49,26 @@ pub enum MessageCommand {
         /// Message ID
         message_id: String,
     },
+    /// React to a message
+    React {
+        /// Conversation ID (channel or chat thread ID)
+        conversation_id: String,
+        /// Message ID to react to
+        message_id: String,
+        /// Reaction type: like, heart, laugh, surprised, sad, angry
+        #[arg(long)]
+        reaction: String,
+    },
+    /// Remove a reaction from a message
+    Unreact {
+        /// Conversation ID (channel or chat thread ID)
+        conversation_id: String,
+        /// Message ID to remove reaction from
+        message_id: String,
+        /// Reaction type to remove: like, heart, laugh, surprised, sad, angry
+        #[arg(long)]
+        reaction: String,
+    },
 }
 
 pub struct MessageContext<'a> {
@@ -173,8 +193,56 @@ pub async fn handle(
                 })?;
             output::print_output(format, message, start.elapsed().as_millis() as u64);
         }
+        MessageCommand::React {
+            conversation_id,
+            message_id,
+            reaction,
+        } => {
+            validate_reaction(reaction)?;
+            let start = Instant::now();
+            msg_client
+                .react(conversation_id, message_id, reaction)
+                .await?;
+            let result = serde_json::json!({
+                "message_id": message_id,
+                "reaction": reaction,
+                "action": "added",
+            });
+            output::print_output(format, result, start.elapsed().as_millis() as u64);
+        }
+        MessageCommand::Unreact {
+            conversation_id,
+            message_id,
+            reaction,
+        } => {
+            validate_reaction(reaction)?;
+            let start = Instant::now();
+            msg_client
+                .unreact(conversation_id, message_id, reaction)
+                .await?;
+            let result = serde_json::json!({
+                "message_id": message_id,
+                "reaction": reaction,
+                "action": "removed",
+            });
+            output::print_output(format, result, start.elapsed().as_millis() as u64);
+        }
     }
     Ok(())
+}
+
+const VALID_REACTIONS: &[&str] = &["like", "heart", "laugh", "surprised", "sad", "angry"];
+
+fn validate_reaction(reaction: &str) -> Result<()> {
+    if VALID_REACTIONS.contains(&reaction) {
+        Ok(())
+    } else {
+        Err(crate::error::TeamsError::InvalidInput(format!(
+            "invalid reaction '{}'. Valid reactions: {}",
+            reaction,
+            VALID_REACTIONS.join(", ")
+        )))
+    }
 }
 
 /// Parse `<at id="8:orgid:...">Name</at>` tags from content.

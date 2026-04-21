@@ -98,6 +98,77 @@ impl<'a> MessagesClient<'a> {
                 message: format!("failed to parse send response: {e}"),
             })
     }
+
+    pub async fn react(
+        &self,
+        conversation_id: &str,
+        message_id: &str,
+        reaction: &str,
+    ) -> Result<()> {
+        let encoded_id = urlencoding::encode(conversation_id);
+        let url = format!(
+            "{}/v1/users/ME/conversations/{}/messages/{}/properties?name=emotions",
+            self.chat_service_url, encoded_id, message_id,
+        );
+        let auth = self.auth_header();
+
+        let timestamp = chrono::Utc::now().timestamp_millis().to_string();
+        let emotions_value = serde_json::json!({
+            "key": reaction,
+            "value": timestamp,
+        });
+
+        let body = serde_json::json!({
+            "emotions": emotions_value.to_string(),
+        });
+
+        self.http
+            .execute_with_retry(|| {
+                self.http
+                    .client
+                    .put(&url)
+                    .header("Authentication", &auth)
+                    .json(&body)
+            })
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn unreact(
+        &self,
+        conversation_id: &str,
+        message_id: &str,
+        reaction: &str,
+    ) -> Result<()> {
+        let encoded_id = urlencoding::encode(conversation_id);
+        let url = format!(
+            "{}/v1/users/ME/conversations/{}/messages/{}/properties?name=emotions",
+            self.chat_service_url, encoded_id, message_id,
+        );
+        let auth = self.auth_header();
+
+        let emotions_value = serde_json::json!({
+            "key": reaction,
+            "value": "",
+        });
+
+        let body = serde_json::json!({
+            "emotions": emotions_value.to_string(),
+        });
+
+        self.http
+            .execute_with_retry(|| {
+                self.http
+                    .client
+                    .put(&url)
+                    .header("Authentication", &auth)
+                    .json(&body)
+            })
+            .await?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
