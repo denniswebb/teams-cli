@@ -32,6 +32,12 @@ pub struct RegionGtms {
     #[serde(rename = "chatServiceAggregator", default)]
     #[allow(dead_code)]
     pub chat_service_aggregator: String,
+    /// AMS endpoint for image/file rendering URLs (e.g. https://us-api.asm.skype.com)
+    #[serde(default)]
+    pub ams: String,
+    /// AMS V2 endpoint for blob upload (e.g. https://us-prod.asyncgw.teams.microsoft.com)
+    #[serde(rename = "amsV2", default)]
+    pub ams_v2: String,
 }
 
 fn validate_service_url(url_str: &str, name: &str) -> Result<()> {

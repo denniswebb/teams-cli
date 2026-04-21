@@ -162,15 +162,15 @@ async fn run(cli: Cli, format: OutputFormat) -> error::Result<()> {
                 Commands::Channel(args) => cli::channel::handle(args, &tokens, &http, format).await,
                 Commands::Chat(args) => cli::chat::handle(args, &tokens, &http, format).await,
                 Commands::Message(args) => {
-                    cli::message::handle(
-                        args,
-                        &tokens,
+                    let msg_ctx = cli::message::MessageContext {
+                        tokens: &tokens,
                         messaging_token,
-                        &http,
+                        http: &http,
                         chat_service_url,
-                        format,
-                    )
-                    .await
+                        ams_v2_url: &authz.region_gtms.ams_v2,
+                        ams_url: &authz.region_gtms.ams,
+                    };
+                    cli::message::handle(args, &msg_ctx, format).await
                 }
                 Commands::Tenant(args) => {
                     cli::tenant::handle(args, &tokens, &http, mt_url, format).await

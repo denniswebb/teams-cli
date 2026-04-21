@@ -56,6 +56,7 @@ impl<'a> MessagesClient<'a> {
         display_name: &str,
         is_html: bool,
         mentions_json: Option<&str>,
+        amsreferences: Option<Vec<String>>,
     ) -> Result<serde_json::Value> {
         let encoded_id = urlencoding::encode(conversation_id);
         let url = format!(
@@ -64,11 +65,17 @@ impl<'a> MessagesClient<'a> {
         );
         let auth = self.auth_header();
 
-        let messagetype = if is_html { "RichText/Html" } else { "Text" };
+        // Skype wire quirk: RichText/Html messages use contenttype "Text"
+        // (capital T), not "text/html". Verified against real Teams client.
+        let (messagetype, contenttype) = if is_html {
+            ("RichText/Html", "Text")
+        } else {
+            ("Text", "text")
+        };
         let body = SendMessageRequest {
             content: content.to_string(),
             messagetype: messagetype.to_string(),
-            contenttype: "text".to_string(),
+            contenttype: contenttype.to_string(),
             clientmessageid: chrono::Utc::now().timestamp_millis().to_string(),
             imdisplayname: display_name.to_string(),
             properties: Some(SendMessageProperties {
@@ -76,6 +83,7 @@ impl<'a> MessagesClient<'a> {
                 subject: None,
                 mentions: mentions_json.map(|s| s.to_string()),
             }),
+            amsreferences,
         };
 
         let resp = self
@@ -95,6 +103,77 @@ impl<'a> MessagesClient<'a> {
                 status: 0,
                 message: format!("failed to parse send response: {e}"),
             })
+    }
+
+    pub async fn react(
+        &self,
+        conversation_id: &str,
+        message_id: &str,
+        reaction: &str,
+    ) -> Result<()> {
+        let encoded_id = urlencoding::encode(conversation_id);
+        let url = format!(
+            "{}/v1/users/ME/conversations/{}/messages/{}/properties?name=emotions",
+            self.chat_service_url, encoded_id, message_id,
+        );
+        let auth = self.auth_header();
+
+        let timestamp = chrono::Utc::now().timestamp_millis().to_string();
+        let emotions_value = serde_json::json!({
+            "key": reaction,
+            "value": timestamp,
+        });
+
+        let body = serde_json::json!({
+            "emotions": emotions_value.to_string(),
+        });
+
+        self.http
+            .execute_with_retry(|| {
+                self.http
+                    .client
+                    .put(&url)
+                    .header("Authentication", &auth)
+                    .json(&body)
+            })
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn unreact(
+        &self,
+        conversation_id: &str,
+        message_id: &str,
+        reaction: &str,
+    ) -> Result<()> {
+        let encoded_id = urlencoding::encode(conversation_id);
+        let url = format!(
+            "{}/v1/users/ME/conversations/{}/messages/{}/properties?name=emotions",
+            self.chat_service_url, encoded_id, message_id,
+        );
+        let auth = self.auth_header();
+
+        let emotions_value = serde_json::json!({
+            "key": reaction,
+            "value": "",
+        });
+
+        let body = serde_json::json!({
+            "emotions": emotions_value.to_string(),
+        });
+
+        self.http
+            .execute_with_retry(|| {
+                self.http
+                    .client
+                    .put(&url)
+                    .header("Authentication", &auth)
+                    .json(&body)
+            })
+            .await?;
+
+        Ok(())
     }
 }
 
