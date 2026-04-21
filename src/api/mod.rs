@@ -3,6 +3,7 @@ pub mod blob;
 pub mod csa;
 pub mod messages;
 pub mod mt;
+pub mod subscribe;
 
 use std::time::Duration;
 
