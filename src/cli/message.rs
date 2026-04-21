@@ -245,20 +245,33 @@ fn validate_reaction(reaction: &str) -> Result<()> {
     }
 }
 
+/// Minimal HTML entity unescape for display-name text.
+fn html_unescape(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+}
+
 /// Parse `<at id="8:orgid:...">Name</at>` tags from content.
 /// Rewrites them to `<span>` mention tags and builds the mentions metadata JSON
-/// that the Teams API expects.
+/// that the Teams API expects. Only MRI-formatted IDs (8: for users, 28: for
+/// bots) are recognized; non-MRI `<at>` tags are left untouched.
 fn parse_and_rewrite_mentions(content: &str) -> (String, Option<String>) {
     let re_str = r#"<at id="([^"]+)">([^<]+)</at>"#;
     let re = regex::Regex::new(re_str).expect("valid regex");
 
     let mut mentions = Vec::new();
 
-    // First pass: collect mentions
+    // First pass: collect mentions with valid MRI prefixes
     for (idx, cap) in re.captures_iter(content).enumerate() {
         let mri = cap[1].to_string();
-        let display_name = cap[2].to_string();
-        mentions.push((mri, display_name, idx as u32));
+        // Only accept user MRIs (8:) and bot MRIs (28:)
+        if mri.starts_with("8:") || mri.starts_with("28:") {
+            let display_name = html_unescape(&cap[2]);
+            mentions.push((mri, display_name, idx as u32));
+        }
     }
 
     if mentions.is_empty() {
@@ -269,10 +282,27 @@ fn parse_and_rewrite_mentions(content: &str) -> (String, Option<String>) {
     let mut rewritten = content.to_string();
     for (mri, name, id) in &mentions {
         let old_tag = format!(r#"<at id="{mri}">{name}</at>"#);
+        // Also handle the unescaped form in case the original had entities
+        let old_tag_escaped = format!(
+            r#"<at id="{mri}">{}</at>"#,
+            name.replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+        );
         let new_tag = format!(
             r#"<span itemtype="http://schema.skype.com/Mention" itemscope="" itemid="{id}">{name}</span>"#
         );
-        rewritten = rewritten.replacen(&old_tag, &new_tag, 1);
+        if rewritten.contains(&old_tag) {
+            rewritten = rewritten.replacen(&old_tag, &new_tag, 1);
+        } else {
+            rewritten = rewritten.replacen(&old_tag_escaped, &new_tag, 1);
+        }
+    }
+
+    // Wrap in <p> if not already wrapped — matches real Teams client output
+    let trimmed = rewritten.trim();
+    if !trimmed.starts_with("<p>") {
+        rewritten = format!("<p>{trimmed}</p>");
     }
 
     // Build mentions metadata array
@@ -344,6 +374,58 @@ mod tests {
         assert_eq!(mentions_arr.len(), 2);
         assert_eq!(mentions_arr[0]["mri"], "8:orgid:aaa");
         assert_eq!(mentions_arr[1]["mri"], "8:orgid:bbb");
+    }
+
+    #[test]
+    fn parse_mentions_ignores_non_mri_id() {
+        let input = r#"<at id="0">Dennis Webb</at> hi"#;
+        let (content, mentions) = parse_and_rewrite_mentions(input);
+        assert_eq!(content, r#"<at id="0">Dennis Webb</at> hi"#);
+        assert!(mentions.is_none());
+    }
+
+    #[test]
+    fn parse_mentions_supports_bot_mri() {
+        let input = r#"<at id="28:abcd-1234">Copilot</at> summarize"#;
+        let (content, mentions) = parse_and_rewrite_mentions(input);
+        assert!(content.contains(r#"itemid="0">Copilot</span>"#));
+        let mentions_arr: Vec<serde_json::Value> =
+            serde_json::from_str(mentions.as_ref().unwrap()).unwrap();
+        assert_eq!(mentions_arr[0]["mri"], "28:abcd-1234");
+    }
+
+    #[test]
+    fn parse_mentions_unescapes_display_name() {
+        let input = r#"<at id="8:orgid:x">A &amp; B</at>"#;
+        let (content, mentions) = parse_and_rewrite_mentions(input);
+        assert!(content.contains("A & B"));
+        let mentions_arr: Vec<serde_json::Value> =
+            serde_json::from_str(mentions.as_ref().unwrap()).unwrap();
+        assert_eq!(mentions_arr[0]["displayName"], "A & B");
+    }
+
+    #[test]
+    fn parse_mentions_wraps_in_p_tag() {
+        let input = r#"<at id="8:orgid:abc">Dennis</at> hello"#;
+        let (content, _) = parse_and_rewrite_mentions(input);
+        assert!(content.starts_with("<p>"));
+        assert!(content.ends_with("</p>"));
+    }
+
+    #[test]
+    fn parse_mentions_preserves_existing_p_tag() {
+        let input = r#"<p><at id="8:orgid:abc">Dennis</at> hello</p>"#;
+        let (content, _) = parse_and_rewrite_mentions(input);
+        // Should not double-wrap
+        assert!(!content.starts_with("<p><p>"));
+    }
+
+    #[test]
+    fn html_unescape_entities() {
+        assert_eq!(html_unescape("A &amp; B"), "A & B");
+        assert_eq!(html_unescape("&lt;tag&gt;"), "<tag>");
+        assert_eq!(html_unescape("&quot;hi&quot;"), "\"hi\"");
+        assert_eq!(html_unescape("it&#39;s"), "it's");
     }
 
     #[test]

@@ -65,11 +65,17 @@ impl<'a> MessagesClient<'a> {
         );
         let auth = self.auth_header();
 
-        let messagetype = if is_html { "RichText/Html" } else { "Text" };
+        // Skype wire quirk: RichText/Html messages use contenttype "Text"
+        // (capital T), not "text/html". Verified against real Teams client.
+        let (messagetype, contenttype) = if is_html {
+            ("RichText/Html", "Text")
+        } else {
+            ("Text", "text")
+        };
         let body = SendMessageRequest {
             content: content.to_string(),
             messagetype: messagetype.to_string(),
-            contenttype: "text".to_string(),
+            contenttype: contenttype.to_string(),
             clientmessageid: chrono::Utc::now().timestamp_millis().to_string(),
             imdisplayname: display_name.to_string(),
             properties: Some(SendMessageProperties {
