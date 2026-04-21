@@ -2,6 +2,7 @@ use clap::{Args, Subcommand};
 use std::io::Read;
 use std::time::Instant;
 
+use crate::api::blob::BlobClient;
 use crate::api::messages::MessagesClient;
 use crate::api::HttpClient;
 use crate::auth::token::TokenSet;
@@ -37,6 +38,9 @@ pub enum MessageCommand {
         /// Send as HTML (auto-detected if content contains <at> mention tags)
         #[arg(long)]
         html: bool,
+        /// Attach an image file to the message
+        #[arg(long)]
+        file: Option<String>,
     },
     /// Get a specific message
     Get {
@@ -47,15 +51,21 @@ pub enum MessageCommand {
     },
 }
 
+pub struct MessageContext<'a> {
+    pub tokens: &'a TokenSet,
+    pub messaging_token: &'a str,
+    pub http: &'a HttpClient,
+    pub chat_service_url: &'a str,
+    pub ams_v2_url: &'a str,
+    pub ams_url: &'a str,
+}
+
 pub async fn handle(
     args: &MessageArgs,
-    tokens: &TokenSet,
-    messaging_token: &str,
-    http: &HttpClient,
-    chat_service_url: &str,
+    ctx: &MessageContext<'_>,
     format: OutputFormat,
 ) -> Result<()> {
-    let msg_client = MessagesClient::new(http, messaging_token, chat_service_url);
+    let msg_client = MessagesClient::new(ctx.http, ctx.messaging_token, ctx.chat_service_url);
 
     match &args.command {
         MessageCommand::List {
@@ -84,28 +94,56 @@ pub async fn handle(
             body,
             stdin,
             html,
+            file,
         } => {
             let content = if *stdin {
                 let mut buf = String::new();
                 std::io::stdin()
                     .read_to_string(&mut buf)
                     .map_err(|e| crate::error::TeamsError::InvalidInput(format!("stdin: {e}")))?;
-                buf.trim_end().to_string()
+                Some(buf.trim_end().to_string())
             } else {
-                body.clone().ok_or_else(|| {
-                    crate::error::TeamsError::InvalidInput("provide --body or --stdin".into())
-                })?
+                body.clone()
             };
 
-            // Auto-detect HTML if content contains <at> mention tags or explicit --html
-            let is_html = *html || content.contains("<at ");
+            // Upload image if --file is provided
+            let mut amsreferences = None;
+            let mut image_html = String::new();
+            if let Some(file_path) = file {
+                let path = std::path::Path::new(file_path);
+                if !path.exists() {
+                    return Err(crate::error::TeamsError::InvalidInput(format!(
+                        "file not found: {file_path}"
+                    )));
+                }
+                let blob_client =
+                    BlobClient::new(ctx.http, ctx.messaging_token, ctx.ams_v2_url, ctx.ams_url);
+                let blob_id = blob_client.upload_image(conversation_id, path).await?;
+                image_html = blob_client.build_image_html(&blob_id);
+                amsreferences = Some(vec![blob_id]);
+            }
+
+            // Build final content
+            let final_raw = match (&content, image_html.is_empty()) {
+                (Some(text), true) => text.clone(),
+                (Some(text), false) => format!("{text}{image_html}"),
+                (None, false) => image_html.clone(),
+                (None, true) => {
+                    return Err(crate::error::TeamsError::InvalidInput(
+                        "provide --body, --stdin, or --file".into(),
+                    ));
+                }
+            };
+
+            // Auto-detect HTML if content contains <at> mention tags, --html flag, or image
+            let is_html = *html || final_raw.contains("<at ") || amsreferences.is_some();
             let (final_content, mentions_json) = if is_html {
-                parse_and_rewrite_mentions(&content)
+                parse_and_rewrite_mentions(&final_raw)
             } else {
-                (content, None)
+                (final_raw, None)
             };
 
-            let display_name = crate::auth::token::extract_username(&tokens.teams.raw)
+            let display_name = crate::auth::token::extract_username(&ctx.tokens.teams.raw)
                 .unwrap_or_else(|_| "Unknown".into());
 
             let start = Instant::now();
@@ -116,6 +154,7 @@ pub async fn handle(
                     &display_name,
                     is_html,
                     mentions_json.as_deref(),
+                    amsreferences,
                 )
                 .await?;
             output::print_output(format, result, start.elapsed().as_millis() as u64);

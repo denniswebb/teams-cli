@@ -56,6 +56,7 @@ impl<'a> MessagesClient<'a> {
         display_name: &str,
         is_html: bool,
         mentions_json: Option<&str>,
+        amsreferences: Option<Vec<String>>,
     ) -> Result<serde_json::Value> {
         let encoded_id = urlencoding::encode(conversation_id);
         let url = format!(
@@ -76,6 +77,7 @@ impl<'a> MessagesClient<'a> {
                 subject: None,
                 mentions: mentions_json.map(|s| s.to_string()),
             }),
+            amsreferences,
         };
 
         let resp = self
