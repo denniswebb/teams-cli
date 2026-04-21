@@ -8,7 +8,7 @@ use crate::error::{Result, TeamsError};
 use super::HttpClient;
 
 const AMS_CLIENT_VERSION: &str = "1415/1.0.0.2020050625";
-const AMS_USER_AGENT: &str = "Teams-CLI/0.1.1";
+const AMS_USER_AGENT: &str = "Teams-CLI/0.2.0";
 
 #[derive(Debug, Deserialize)]
 pub struct CreateObjectResponse {
