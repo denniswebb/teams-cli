@@ -6,6 +6,12 @@ use crate::error::{Result, TeamsError};
 pub const TEAMS_APP_ID: &str = "5e3ce6c0-2b1f-4285-8d4b-75ee78787346";
 pub const SKYPE_RESOURCE: &str = "https://api.spaces.skype.com";
 pub const CHATSVCAGG_RESOURCE: &str = "https://chatsvcagg.teams.microsoft.com";
+pub const OUTLOOK_RESOURCE: &str = "https://outlook.office365.com";
+pub const COPILOT_RESOURCE: &str = "https://substrate.office.com/sydney";
+// The M365 Copilot web app uses this app ID, but it doesn't support implicit
+// grant. We use TEAMS_APP_ID instead for the webview flow.
+#[allow(dead_code)]
+pub const COPILOT_APP_ID: &str = "c0ab8ce9-e9a0-42e7-b064-33d422df41f1";
 #[allow(dead_code)]
 pub const REDIRECT_URI: &str = "https://teams.microsoft.com/go";
 #[allow(dead_code)]
@@ -16,6 +22,10 @@ pub struct TokenSet {
     pub teams: TokenInfo,
     pub skype: TokenInfo,
     pub chatsvcagg: TokenInfo,
+    #[serde(default)]
+    pub outlook: Option<TokenInfo>,
+    #[serde(default)]
+    pub copilot: Option<TokenInfo>,
     pub profile: String,
     pub tenant_id: String,
 }
@@ -26,6 +36,8 @@ impl std::fmt::Debug for TokenSet {
             .field("teams", &self.teams)
             .field("skype", &self.skype)
             .field("chatsvcagg", &self.chatsvcagg)
+            .field("outlook", &self.outlook)
+            .field("copilot", &self.copilot)
             .field("profile", &self.profile)
             .field("tenant_id", &self.tenant_id)
             .finish()
@@ -102,6 +114,24 @@ impl TokenSet {
     pub fn skype_bearer(&self) -> String {
         format!("Bearer {}", self.skype.raw)
     }
+
+    pub fn outlook_bearer(&self) -> crate::error::Result<String> {
+        match &self.outlook {
+            Some(t) => Ok(format!("Bearer {}", t.raw)),
+            None => Err(TeamsError::AuthError(
+                "outlook token not available; run a mail or calendar command to trigger authentication".into(),
+            )),
+        }
+    }
+
+    pub fn copilot_token(&self) -> crate::error::Result<&str> {
+        match &self.copilot {
+            Some(t) => Ok(&t.raw),
+            None => Err(TeamsError::AuthError(
+                "copilot token not available; run 'teams auth login' to re-authenticate".into(),
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,6 +143,8 @@ pub(crate) struct JwtClaims {
     aud: Option<String>,
     #[serde(default)]
     pub tid: Option<String>,
+    #[serde(default)]
+    pub oid: Option<String>,
     #[serde(default)]
     pub upn: Option<String>,
     #[serde(default)]
@@ -358,6 +390,8 @@ mod tests {
             teams: make_token_info(teams_exp),
             skype: make_token_info(skype_exp),
             chatsvcagg: make_token_info(agg_exp),
+            outlook: None,
+            copilot: None,
             profile: "test".to_string(),
             tenant_id: "tid-123".to_string(),
         }
@@ -414,5 +448,45 @@ mod tests {
             !debug.contains(&ts.chatsvcagg.raw),
             "chatsvcagg JWT leaked in debug output"
         );
+    }
+
+    // ── Outlook token (backwards compat) ──────────────────────────
+
+    #[test]
+    fn token_set_deserialize_without_outlook_field() {
+        let far_future = 4102444800i64;
+        let ts = make_test_token_set(far_future, far_future, far_future);
+        let mut json_val: serde_json::Value = serde_json::to_value(&ts).unwrap();
+        // Remove the outlook field to simulate old token files
+        json_val.as_object_mut().unwrap().remove("outlook");
+        let json = serde_json::to_string(&json_val).unwrap();
+        let deserialized: TokenSet = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.outlook.is_none());
+        assert_eq!(deserialized.profile, "test");
+    }
+
+    #[test]
+    fn token_set_is_expired_ignores_outlook() {
+        let far_future = 4102444800i64;
+        let mut ts = make_test_token_set(far_future, far_future, far_future);
+        // Outlook expired should not affect is_expired
+        ts.outlook = Some(make_token_info(0));
+        assert!(!ts.is_expired());
+    }
+
+    #[test]
+    fn outlook_bearer_returns_error_when_none() {
+        let far_future = 4102444800i64;
+        let ts = make_test_token_set(far_future, far_future, far_future);
+        assert!(ts.outlook_bearer().is_err());
+    }
+
+    #[test]
+    fn outlook_bearer_returns_bearer_when_some() {
+        let far_future = 4102444800i64;
+        let mut ts = make_test_token_set(far_future, far_future, far_future);
+        ts.outlook = Some(make_token_info(far_future));
+        let bearer = ts.outlook_bearer().unwrap();
+        assert!(bearer.starts_with("Bearer "));
     }
 }
