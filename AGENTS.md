@@ -2,9 +2,9 @@
 
 ## Project Overview
 
-teams-cli is a Rust CLI for Microsoft Teams using the internal Skype/CSA APIs
-(not the Microsoft Graph API). It uses the same endpoints as the official Teams
-client.
+teams-cli is a Rust CLI for Microsoft Teams and Outlook. Teams commands use
+internal Skype/CSA APIs (not Microsoft Graph). Outlook commands (mail, calendar)
+use the Outlook REST API v2.0 at `outlook.office365.com/api/v2.0/`.
 
 ## Build and Test
 
@@ -25,19 +25,20 @@ src/
   config.rs         -- TOML config at ~/.config/teams-cli/config.toml. Sentinel-based defaults.
   cli/              -- clap command definitions and handlers
     mod.rs          -- Cli struct, Commands enum, global flags (--no-auto-login, --no-color, etc.)
-    auth.rs         -- login (webview/device-code), status, logout, token
+    auth.rs         -- login (webview), status, logout, token
     user.rs         -- me, get, search
     team.rs         -- list, get
     channel.rs      -- list, get, pinned
     chat.rs         -- list (--all for hidden), get
     message.rs      -- list, send (--body or --stdin), get
+    mail.rs         -- list, read, send, search (Outlook email)
+    calendar.rs     -- list, get, create (Outlook calendar)
     tenant.rs       -- list, domains
     config_cmd.rs   -- init, show, set, path
   auth/
     mod.rs          -- Token resolution: env vars > file store
-    token.rs        -- TokenSet, TokenInfo, JWT decode, constants
-    webview.rs      -- tao/wry webview for 3-token OAuth2 implicit flow (returns Result<TokenSet>)
-    device_code.rs  -- OAuth2 device code flow fallback for headless
+    token.rs        -- TokenSet, TokenInfo, JWT decode, constants (incl. OUTLOOK_RESOURCE)
+    webview.rs      -- tao/wry webview for 4-token OAuth2 implicit flow (returns Result<TokenSet>)
     keyring.rs      -- File-based token storage at ~/.config/teams-cli/tokens/<profile>.json (0600/0700)
   api/
     mod.rs          -- HttpClient with retry/backoff, percent-encoded URL params, domain-validated authz
@@ -45,8 +46,10 @@ src/
     csa.rs          -- Chat Service Aggregator: teams, channels, chats
     messages.rs     -- Messages API: read/write messages (uses authz skypeToken)
     mt.rs           -- MiddleTier: user profiles, tenants (uses authz-discovered MT URL)
+    outlook.rs      -- OutlookClient: email + calendar via Outlook REST API v2.0
   models/           -- Serde structs for API responses
     mod.rs          -- Re-exports
+    outlook.rs      -- OutlookMessage, OutlookEvent, SendMailRequest, etc.
     chat.rs         -- Chat thread models
     conversation.rs -- Conversation/thread models
     message.rs      -- Message models
@@ -62,9 +65,10 @@ src/
 ## Authentication Flow
 
 1. **Webview login** (`teams auth login`): Opens native webview via tao/wry,
-   navigates to `login.microsoftonline.com/oauth2/authorize` three times to
-   capture Teams id_token, Skype access_token, and ChatSvcAgg access_token via
-   OAuth2 implicit flow. Tokens stored to file (0600 permissions, 0700 directory).
+   navigates to `login.microsoftonline.com/oauth2/authorize` four times to
+   capture Teams id_token, Skype access_token, ChatSvcAgg access_token, and
+   Outlook access_token via OAuth2 implicit flow. Tokens stored to file
+   (0600 permissions, 0700 directory).
 
 2. **Authz exchange** (on every API command): POST to
    `teams.microsoft.com/api/authsvc/v1.0/authz` with the OAuth Skype token.
@@ -73,13 +77,15 @@ src/
    domains.
 
 3. **Auto-login**: If tokens are missing or expired, the CLI attempts
-   authentication before running the command (unless `--no-auto-login` is set).
+   webview authentication before running the command (unless `--no-auto-login`
+   is set). For mail/calendar commands, the Outlook token is also checked.
    The CLI does not retry commands that fail mid-execution.
 
-4. **Token usage by service**:
+5. **Token usage by service**:
    - CSA: `Authorization: Bearer {chatsvcagg_token}` (OAuth token)
    - Messages: `Authentication: skypetoken={authz_skype_token}` (exchanged token)
    - MiddleTier: `Authorization: Bearer {oauth_skype_token}` (OAuth token)
+   - Outlook REST API: `Authorization: Bearer {outlook_token}` (OAuth token)
 
 ## Security Notes
 
@@ -95,6 +101,8 @@ src/
 - Teams App ID: `5e3ce6c0-2b1f-4285-8d4b-75ee78787346`
 - Redirect URI: `https://teams.microsoft.com/go`
 - Authz endpoint: `https://teams.microsoft.com/api/authsvc/v1.0/authz`
+- Outlook resource: `https://outlook.office365.com`
+- Outlook API base: `https://outlook.office365.com/api/v2.0/me`
 
 ## API Quirks
 

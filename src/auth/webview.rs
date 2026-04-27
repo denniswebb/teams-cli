@@ -8,7 +8,7 @@ use wry::WebViewBuilder;
 
 use super::token::{
     extract_tenant_id, TokenInfo, TokenSet, TokenType, CHATSVCAGG_RESOURCE, MICROSOFT_TENANT_ID,
-    REDIRECT_URI, SKYPE_RESOURCE, TEAMS_APP_ID,
+    OUTLOOK_RESOURCE, REDIRECT_URI, SKYPE_RESOURCE, TEAMS_APP_ID,
 };
 use crate::error::TeamsError;
 
@@ -17,6 +17,7 @@ enum AuthPhase {
     Teams,
     Skype,
     ChatSvcAgg,
+    Outlook,
     Done,
 }
 
@@ -25,12 +26,18 @@ struct AuthState {
     teams_token: Option<String>,
     skype_token: Option<String>,
     chatsvcagg_token: Option<String>,
+    outlook_token: Option<String>,
     tenant_id: String,
     redirect_count: u32,
     expected_state: Option<String>,
 }
 
-fn build_auth_url(tenant: &str, response_type: &str, resource: Option<&str>) -> (String, String) {
+fn build_auth_url(
+    tenant: &str,
+    response_type: &str,
+    resource: Option<&str>,
+    client_id: &str,
+) -> (String, String) {
     let state = uuid::Uuid::new_v4().to_string();
     let nonce = uuid::Uuid::new_v4().to_string();
     let client_request_id = uuid::Uuid::new_v4().to_string();
@@ -38,7 +45,7 @@ fn build_auth_url(tenant: &str, response_type: &str, resource: Option<&str>) -> 
     let mut url = format!(
         "https://login.microsoftonline.com/{tenant}/oauth2/authorize\
          ?response_type={response_type}\
-         &client_id={TEAMS_APP_ID}\
+         &client_id={client_id}\
          &redirect_uri={REDIRECT_URI}\
          &state={state}\
          &client-request-id={client_request_id}\
@@ -101,16 +108,19 @@ fn is_allowed_domain(url: &str) -> bool {
     false
 }
 
-/// Run the webview-based 3-token OAuth2 flow.
+/// Run the webview-based 4-token OAuth2 flow (Teams, Skype, ChatSvcAgg, Outlook).
+/// All tokens use implicit grant via the Teams app ID.
 /// Must be called from the main thread. Returns the token set on success.
 pub fn webview_login(initial_tenant: &str, profile: &str) -> crate::error::Result<TokenSet> {
-    let (initial_url, initial_state) = build_auth_url(initial_tenant, "id_token", None);
+    let (initial_url, initial_state) =
+        build_auth_url(initial_tenant, "id_token", None, TEAMS_APP_ID);
 
     let state = Arc::new(Mutex::new(AuthState {
         phase: AuthPhase::Teams,
         teams_token: None,
         skype_token: None,
         chatsvcagg_token: None,
+        outlook_token: None,
         tenant_id: initial_tenant.to_string(),
         redirect_count: 0,
         expected_state: Some(initial_state),
@@ -143,18 +153,18 @@ pub fn webview_login(initial_tenant: &str, profile: &str) -> crate::error::Resul
                 return true;
             }
 
+            let mut auth = state_for_nav.lock().unwrap_or_else(|e| e.into_inner());
+            auth.redirect_count += 1;
+
+            if auth.redirect_count > 12 {
+                let _ = proxy_for_nav.send_event("error:too many redirects".into());
+                return false;
+            }
+
             let Some((token, is_id_token, returned_state)) = extract_token_from_fragment(&url)
             else {
                 return false;
             };
-
-            let mut auth = state_for_nav.lock().unwrap_or_else(|e| e.into_inner());
-            auth.redirect_count += 1;
-
-            if auth.redirect_count > 10 {
-                let _ = proxy_for_nav.send_event("error:too many redirects".into());
-                return false;
-            }
 
             if let Some(ref expected) = auth.expected_state {
                 match returned_state {
@@ -182,8 +192,12 @@ pub fn webview_login(initial_tenant: &str, profile: &str) -> crate::error::Resul
                         }
                         auth.teams_token = Some(token);
                         auth.phase = AuthPhase::Skype;
-                        let (next_url, next_state) =
-                            build_auth_url(&auth.tenant_id, "token", Some(SKYPE_RESOURCE));
+                        let (next_url, next_state) = build_auth_url(
+                            &auth.tenant_id,
+                            "token",
+                            Some(SKYPE_RESOURCE),
+                            TEAMS_APP_ID,
+                        );
                         auth.expected_state = Some(next_state);
                         let _ = proxy_for_nav.send_event(format!("navigate:{next_url}"));
                     }
@@ -191,13 +205,29 @@ pub fn webview_login(initial_tenant: &str, profile: &str) -> crate::error::Resul
                 AuthPhase::Skype => {
                     auth.skype_token = Some(token);
                     auth.phase = AuthPhase::ChatSvcAgg;
-                    let (next_url, next_state) =
-                        build_auth_url(&auth.tenant_id, "token", Some(CHATSVCAGG_RESOURCE));
+                    let (next_url, next_state) = build_auth_url(
+                        &auth.tenant_id,
+                        "token",
+                        Some(CHATSVCAGG_RESOURCE),
+                        TEAMS_APP_ID,
+                    );
                     auth.expected_state = Some(next_state);
                     let _ = proxy_for_nav.send_event(format!("navigate:{next_url}"));
                 }
                 AuthPhase::ChatSvcAgg => {
                     auth.chatsvcagg_token = Some(token);
+                    auth.phase = AuthPhase::Outlook;
+                    let (next_url, next_state) = build_auth_url(
+                        &auth.tenant_id,
+                        "token",
+                        Some(OUTLOOK_RESOURCE),
+                        TEAMS_APP_ID,
+                    );
+                    auth.expected_state = Some(next_state);
+                    let _ = proxy_for_nav.send_event(format!("navigate:{next_url}"));
+                }
+                AuthPhase::Outlook => {
+                    auth.outlook_token = Some(token);
                     auth.phase = AuthPhase::Done;
                     auth.expected_state = None;
                     let _ = proxy_for_nav.send_event("done".into());
@@ -284,10 +314,17 @@ fn build_token_set(auth: &AuthState, profile: &str) -> crate::error::Result<Toke
         .as_ref()
         .ok_or_else(|| TeamsError::AuthError("missing chatsvcagg token".into()))?;
 
+    let outlook = auth
+        .outlook_token
+        .as_ref()
+        .map(|raw| TokenInfo::from_jwt(raw, TokenType::AccessToken))
+        .transpose()?;
+
     Ok(TokenSet {
         teams: TokenInfo::from_jwt(teams_raw, TokenType::IdToken)?,
         skype: TokenInfo::from_jwt(skype_raw, TokenType::AccessToken)?,
         chatsvcagg: TokenInfo::from_jwt(chatsvcagg_raw, TokenType::AccessToken)?,
+        outlook,
         profile: profile.to_string(),
         tenant_id: auth.tenant_id.clone(),
     })

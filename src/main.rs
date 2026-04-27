@@ -43,13 +43,9 @@ fn main() {
     };
 
     // Webview login must run on the main thread (tao/wry requirement).
-    // Handle explicit `auth login` (without --device-code).
+    // Handle explicit `auth login`.
     if let Commands::Auth(ref auth_args) = cli.command {
-        if let cli::auth::AuthCommand::Login {
-            device_code: false,
-            ref tenant,
-        } = auth_args.command
-        {
+        if let cli::auth::AuthCommand::Login { ref tenant } = auth_args.command {
             match auth::webview::webview_login(tenant, &cli.profile) {
                 Ok(token_set) => {
                     let username = auth::token::extract_username(&token_set.teams.raw)
@@ -82,8 +78,17 @@ fn main() {
         } else {
             &cli.profile
         };
+        let is_outlook_cmd = matches!(cli.command, Commands::Mail(_) | Commands::Calendar(_));
         let needs_login = match auth::resolve_tokens(profile) {
-            Ok(Some(ts)) => ts.is_expired(),
+            Ok(Some(ts)) => {
+                if ts.is_expired() {
+                    true
+                } else if is_outlook_cmd {
+                    ts.outlook.as_ref().is_none_or(|t| t.is_expired())
+                } else {
+                    false
+                }
+            }
             Ok(None) => true,
             Err(_) => true,
         };
@@ -142,6 +147,19 @@ async fn run(cli: Cli, format: OutputFormat) -> error::Result<()> {
             Ok(())
         }
 
+        // Outlook commands use lazy token acquisition (no Teams authz exchange)
+        Commands::Mail(args) => {
+            let tenant = cfg.profile(profile).tenant_id.clone();
+            let http = api::HttpClient::new(&network);
+            let tokens = auth::ensure_outlook_token(profile, &tenant).await?;
+            cli::mail::handle(args, &tokens, &http, format).await
+        }
+        Commands::Calendar(args) => {
+            let tenant = cfg.profile(profile).tenant_id.clone();
+            let http = api::HttpClient::new(&network);
+            let tokens = auth::ensure_outlook_token(profile, &tenant).await?;
+            cli::calendar::handle(args, &tokens, &http, format).await
+        }
         // All other commands need auth + authz token exchange
         cmd => {
             let tenant = cfg.profile(profile).tenant_id.clone();

@@ -1,7 +1,9 @@
 pub mod auth;
+pub mod calendar;
 pub mod channel;
 pub mod chat;
 pub mod config_cmd;
+pub mod mail;
 pub mod message;
 pub mod team;
 pub mod tenant;
@@ -72,6 +74,10 @@ pub enum Commands {
     Message(message::MessageArgs),
     /// Tenant information
     Tenant(tenant::TenantArgs),
+    /// Email operations (Outlook)
+    Mail(mail::MailArgs),
+    /// Calendar operations (Outlook)
+    Calendar(calendar::CalendarArgs),
     /// Configuration management
     Config(config_cmd::ConfigArgs),
     /// Generate shell completions

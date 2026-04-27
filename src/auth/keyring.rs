@@ -149,6 +149,7 @@ mod tests {
             teams: TokenInfo::from_jwt(&jwt_teams, TokenType::IdToken).unwrap(),
             skype: TokenInfo::from_jwt(&jwt_skype, TokenType::AccessToken).unwrap(),
             chatsvcagg: TokenInfo::from_jwt(&jwt_agg, TokenType::AccessToken).unwrap(),
+            outlook: None,
             profile: "test-profile".to_string(),
             tenant_id: "t-123".to_string(),
         }

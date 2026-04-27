@@ -13,11 +13,8 @@ pub struct AuthArgs {
 
 #[derive(Subcommand)]
 pub enum AuthCommand {
-    /// Authenticate with Microsoft Teams
+    /// Authenticate with Microsoft Teams and Outlook
     Login {
-        /// Use device code flow (for headless environments)
-        #[arg(long)]
-        device_code: bool,
         /// Tenant ID or 'common'
         #[arg(long, default_value = "common")]
         tenant: String,
@@ -32,7 +29,7 @@ pub enum AuthCommand {
     },
     /// Print raw access token for scripting
     Token {
-        /// Which token to print: teams, skype, chatsvcagg
+        /// Which token to print: teams, skype, chatsvcagg, outlook
         #[arg(default_value = "skype")]
         token_type: String,
     },
@@ -40,18 +37,9 @@ pub enum AuthCommand {
 
 pub async fn handle(args: &AuthArgs, profile: &str, format: OutputFormat) -> Result<()> {
     match &args.command {
-        AuthCommand::Login {
-            device_code,
-            tenant,
-        } => {
-            if *device_code {
-                eprintln!("Starting device code login flow...");
-                let token_set = auth::device_code::device_code_login(tenant, profile).await?;
-                auth::keyring::store_tokens(profile, &token_set)?;
-                print_login_success(&token_set, format);
-            }
-            // Webview login (device_code: false) is handled on the main thread
-            // before the async runtime starts. See main.rs.
+        AuthCommand::Login { .. } => {
+            // Webview login is handled on the main thread before the async
+            // runtime starts. See main.rs.
             Ok(())
         }
 
@@ -78,6 +66,10 @@ pub async fn handle(args: &AuthArgs, profile: &str, format: OutputFormat) -> Res
                             "expired": ts.chatsvcagg.is_expired(),
                             "expires_at": ts.chatsvcagg.expires_at.map(|t| t.to_rfc3339()),
                         },
+                        "outlook_token": ts.outlook.as_ref().map(|t| serde_json::json!({
+                            "expired": t.is_expired(),
+                            "expires_at": t.expires_at.map(|e| e.to_rfc3339()),
+                        })),
                     });
                     output::print_output(format, status, 0);
                 }
@@ -114,9 +106,17 @@ pub async fn handle(args: &AuthArgs, profile: &str, format: OutputFormat) -> Res
                 "teams" => &ts.teams.raw,
                 "skype" => &ts.skype.raw,
                 "chatsvcagg" => &ts.chatsvcagg.raw,
+                "outlook" => match &ts.outlook {
+                    Some(t) => &t.raw,
+                    None => {
+                        return Err(crate::error::TeamsError::AuthError(
+                            "outlook token not available; run 'teams auth login' first".into(),
+                        ));
+                    }
+                },
                 other => {
                     return Err(crate::error::TeamsError::InvalidInput(format!(
-                        "unknown token type: {other} (use teams, skype, or chatsvcagg)"
+                        "unknown token type: {other} (use teams, skype, chatsvcagg, or outlook)"
                     )));
                 }
             };
