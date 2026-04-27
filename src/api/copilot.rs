@@ -29,7 +29,7 @@ impl<'a> CopilotClient<'a> {
         let encoded_token = urlencoding::encode(token);
 
         Ok(format!(
-            "{COPILOT_HUB_BASE}/{}@{}?ConversationId={}&ClientRequestId={}&X-SessionId={}&access_token={}&agent=work&product=Office&scenario=officeweb&licenseType=Premium&source=%22officeweb%22",
+            "{COPILOT_HUB_BASE}/{}@{}?ConversationId={}&ClientRequestId={}&X-SessionId={}&access_token={}&agent=work&product=Office&agentHost=Bizchat.FullScreen&scenario=officeweb&licenseType=Premium&source=%22officeweb%22",
             urlencoding::encode(&oid),
             urlencoding::encode(&self.tokens.tenant_id),
             urlencoding::encode(conversation_id),
@@ -79,19 +79,121 @@ impl<'a> CopilotClient<'a> {
 
         tracing::debug!("signalr handshake response: {:?}", handshake_resp);
 
-        // Send the chat message invocation
-        // NOTE: The exact invocation format needs to be captured from the web client.
-        // This is a best-guess based on SignalR conventions. The target method name
-        // and argument structure will need adjustment once we capture a real request.
+        // Send the chat message as a SignalR StreamInvocation (type 4).
+        // Format captured from the M365 Copilot web client.
+        // The web client uses the same ID for traceId and message.requestId.
+        let request_id = uuid::Uuid::new_v4().to_string();
         let invocation = serde_json::json!({
-            "type": 1,
+            "type": 4,
             "target": "chat",
-            "arguments": [{
-                "message": question,
-                "conversationId": conv_id,
-                "from": "user",
-            }],
             "invocationId": "0",
+            "arguments": [{
+                "source": "officeweb",
+                "clientCorrelationId": &session_id,
+                "sessionId": &session_id,
+                "traceId": &request_id,
+                "isStartOfSession": conversation_id.is_none(),
+                "streamingMode": "ConciseWithPadding",
+                "spokenTextMode": "None",
+                "tone": "Magic",
+                "isSbsSupported": false,
+                "renderReferencesBehindEOS": true,
+                "options": {},
+                "extraExtensionParameters": {},
+                "threadLevelGptId": {},
+                "plugins": [],
+                "optionsSets": [
+                    "enterprise_flux_work",
+                    "enterprise_flux_web",
+                    "enterprise_flux_image",
+                    "enterprise_toolbox_with_skdsstore",
+                    "enterprise_pagination_support",
+                    "enterprise_flux_work_code_interpreter",
+                    "enterprise_code_interpreter_citation_fix",
+                    "at_mention_plugins_enable",
+                    "enable_confirmation_interstitial",
+                    "enable_plugin_auth_interstitial",
+                    "enable_request_response_interstitials",
+                    "enable_response_action_processing",
+                    "enable_batch_token_processing",
+                    "enable_selective_url_redaction",
+                    "enable_gg_gpt",
+                    "enable_inferred_memory_read",
+                    "search_result_progress_messages_with_search_queries",
+                    "flux_v3_references",
+                    "flux_v3_references_entities",
+                    "flux_v3_gptv_enable_upload_multi_image_in_turn_wo_ch",
+                    "flux_v3_image_gen_enable_dimensions",
+                    "gptvnorm2048",
+                    "update_memory_plugin",
+                    "add_custom_instructions",
+                    "agent_recommendations",
+                    "disable_cea_message_listener",
+                    "code_interpreter_interactive_charts",
+                    "cwc_code_interpreter_citation_fix",
+                    "cwc_code_interpreter_interactive_charts_inline_image",
+                    "code_interpreter_matplotlib_patching",
+                    "flux_v3_image_gen_enable_icon_dimensions",
+                    "flux_v3_image_gen_enable_system_text_with_params",
+                    "flux_v3_image_gen_enable_designer_dimensions_meta_prompting_in_system_prompts",
+                ],
+                "allowedMessageTypes": [
+                    "Chat",
+                    "Suggestion",
+                    "InternalSearchQuery",
+                    "Disengaged",
+                    "InternalLoaderMessage",
+                    "Progress",
+                    "GeneratedCode",
+                    "RenderCardRequest",
+                    "AdsQuery",
+                    "SemanticSerp",
+                    "GenerateContentQuery",
+                    "SearchQuery",
+                    "ConfirmationCard",
+                    "AuthError",
+                    "DeveloperLogs",
+                    "TriggerPlugin",
+                    "HintInvocation",
+                    "MemoryUpdate",
+                    "EndOfRequest",
+                    "TriggerConfirmation",
+                    "ResumeInvokeAction",
+                    "ResumeUserInputRequest",
+                    "TriggerUserInputRequest",
+                    "EscapeHatch",
+                    "TriggerPluginAuth",
+                    "ResumePluginAuth",
+                    "SideBySide",
+                    "ReferencesListComplete",
+                    "SwitchRespondingEndpoint",
+                    "GenerateGraphicArt",
+                ],
+                "clientInfo": {
+                    "clientPlatform": "teams-cli",
+                    "clientAppName": "Office",
+                    "clientEntrypoint": "teams-cli",
+                    "clientSessionId": &session_id,
+                    "clientAppType": "CLI",
+                    "deviceOS": std::env::consts::OS,
+                    "deviceType": "Desktop",
+                },
+                "message": {
+                    "author": "user",
+                    "inputMethod": "Keyboard",
+                    "text": question,
+                    "messageType": "Chat",
+                    "requestId": &request_id,
+                    "locale": "en-us",
+                    "experienceType": "Default",
+                    "locationInfo": {
+                        "timeZoneOffset": chrono::Local::now().offset().local_minus_utc() / 60,
+                        "timeZone": "UTC",
+                    },
+                    "adaptiveCards": [],
+                    "entityAnnotationTypes": ["People", "File", "Event", "Email"],
+                },
+            }],
         });
         let invocation_msg = format!(
             "{}{}",
@@ -105,10 +207,12 @@ impl<'a> CopilotClient<'a> {
 
         // Collect response
         let mut response_text = String::new();
+        let mut conv_id_from_server = None;
         let timeout = tokio::time::Duration::from_secs(120);
         let deadline = tokio::time::Instant::now() + timeout;
+        let mut done = false;
 
-        loop {
+        while !done {
             let msg = tokio::time::timeout_at(deadline, read.next())
                 .await
                 .map_err(|_| {
@@ -153,43 +257,58 @@ impl<'a> CopilotClient<'a> {
                         write.send(Message::Text(pong)).await.ok();
                     }
                     1 => {
-                        // Invocation — Copilot sends response chunks this way
+                        // Server-to-client invocation (update, etc.) — extract any text
                         if let Some(args) = &signalr_msg.arguments {
                             for arg in args {
                                 if let Some(t) = arg.get("text").and_then(|v| v.as_str()) {
                                     response_text = t.to_string();
                                 }
-                                if let Some(t) = arg.get("message").and_then(|v| v.as_str()) {
-                                    response_text = t.to_string();
-                                }
-                                if let Some(delta) = arg.get("delta").and_then(|v| v.as_str()) {
-                                    response_text.push_str(delta);
-                                }
                             }
                         }
                     }
                     2 => {
-                        // StreamItem
+                        // StreamItem — main response delivery
                         if let Some(item) = &signalr_msg.item {
-                            if let Some(t) = item.get("text").and_then(|v| v.as_str()) {
-                                response_text = t.to_string();
+                            // Capture conversation ID from server
+                            if let Some(cid) = item.get("conversationId").and_then(|v| v.as_str()) {
+                                conv_id_from_server = Some(cid.to_string());
+                            }
+
+                            // Response text can be in multiple locations:
+                            // - item.messages[last].text (streaming chunks)
+                            // - item.result.message (final/error)
+                            if let Some(messages) = item.get("messages").and_then(|v| v.as_array())
+                            {
+                                // Get the last bot message text
+                                for m in messages.iter().rev() {
+                                    if m.get("author").and_then(|v| v.as_str()) == Some("bot") {
+                                        if let Some(t) = m.get("text").and_then(|v| v.as_str()) {
+                                            response_text = t.to_string();
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Also check result.message for error/final messages
+                            if let Some(result) = item.get("result") {
+                                if let Some(t) = result.get("message").and_then(|v| v.as_str()) {
+                                    if response_text.is_empty() {
+                                        response_text = t.to_string();
+                                    }
+                                }
                             }
                         }
                     }
                     3 => {
-                        // Completion — may contain result or error
+                        // Completion — stream is done
                         if let Some(err) = &signalr_msg.error {
                             return Err(TeamsError::ApiError {
                                 status: 0,
                                 message: format!("copilot error: {err}"),
                             });
                         }
-                        if let Some(result) = &signalr_msg.result {
-                            if let Some(t) = result.get("text").and_then(|v| v.as_str()) {
-                                response_text = t.to_string();
-                            }
-                        }
-                        break;
+                        done = true;
                     }
                     7 => {
                         // Close
@@ -199,7 +318,7 @@ impl<'a> CopilotClient<'a> {
                                 message: format!("copilot connection closed with error: {err}"),
                             });
                         }
-                        break;
+                        done = true;
                     }
                     _ => {
                         tracing::debug!(
@@ -214,7 +333,7 @@ impl<'a> CopilotClient<'a> {
         write.close().await.ok();
 
         Ok(CopilotResponse {
-            conversation_id: conv_id,
+            conversation_id: conv_id_from_server.unwrap_or(conv_id),
             message: response_text,
             citations: vec![],
         })
