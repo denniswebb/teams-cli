@@ -1,13 +1,12 @@
 # teams-cli
 
-CLI for Microsoft Teams using the internal Skype/CSA APIs (not the Microsoft Graph API).
+CLI for Microsoft Teams and Outlook using internal Microsoft APIs (not the Microsoft Graph API).
 
 ## Prerequisites
 
 - **macOS**: No additional dependencies (WebKit via WKWebView).
 - **Linux**: `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`.
 - **Windows**: WebView2 (pre-installed on Windows 10+).
-- **Headless/SSH**: Use `teams auth login --device-code` instead of the webview flow.
 
 ## Install
 
@@ -17,23 +16,22 @@ cargo install --path .
 
 ## Authentication
 
-Teams CLI acquires three OAuth2 tokens via a native webview that opens the
-Microsoft login page. After authentication, a token exchange via the authz
-endpoint provides a messaging-capable Skype token and auto-discovers the
-correct regional API endpoints.
+Teams CLI acquires four OAuth2 tokens via a native webview that opens the
+Microsoft login page (Teams, Skype, ChatSvcAgg, Outlook). After
+authentication, a token exchange via the authz endpoint provides a
+messaging-capable Skype token and auto-discovers the correct regional API
+endpoints.
 
 ```sh
-# Interactive webview login (default)
+# Login via native webview
 teams auth login
-
-# Device code login (for headless/SSH environments)
-teams auth login --device-code
 
 # Check token status
 teams auth status
 
 # Export a token for scripting
 teams auth token skype
+teams auth token outlook
 
 # Clear credentials
 teams auth logout
@@ -91,6 +89,49 @@ teams user me
 teams user get user@example.com
 teams user search "8:orgid:mri-1,8:orgid:mri-2"
 ```
+
+### Email (Outlook)
+
+```sh
+# List recent inbox messages
+teams mail list
+teams mail list --since 1h
+teams mail list --since 24h --unread
+teams mail list --folder "Sent Items" --limit 10
+
+# Read a specific email
+teams mail read <message-id>
+
+# Send an email
+teams mail send --to user@example.com --subject "Hello" --body "Message body"
+teams mail send --to user@example.com --cc other@example.com --subject "FYI" --body "See attached"
+echo "piped body" | teams mail send --to user@example.com --subject "Test" --stdin
+teams mail send --to user@example.com --subject "HTML" --body "<h1>Rich</h1>" --html
+
+# Search emails
+teams mail search "quarterly report" --limit 10
+```
+
+### Calendar (Outlook)
+
+```sh
+# List upcoming events (default: next 7 days)
+teams calendar list
+teams calendar list --from today --to +3d
+teams calendar list --from 2026-05-01 --to 2026-05-31
+
+# Get event details
+teams calendar get <event-id>
+
+# Create a meeting
+teams calendar create --subject "Standup" --start 2026-04-28T09:00:00 --end 2026-04-28T09:30:00
+teams calendar create --subject "Review" --start 2026-04-28T14:00:00 --end 2026-04-28T15:00:00 \
+  --attendees alice@example.com --attendees bob@example.com --online --location "Room 1"
+```
+
+Outlook commands use lazy token acquisition. The first time you run a mail or
+calendar command, you'll be prompted to authenticate via device code flow for
+the Outlook API. The token is cached alongside your Teams tokens.
 
 ### Tenants
 
@@ -152,6 +193,7 @@ Unrecognized format strings are rejected with an error.
 | `TEAMS_CLI_TEAMS_TOKEN` | Override Teams JWT |
 | `TEAMS_CLI_SKYPE_TOKEN` | Override Skype JWT |
 | `TEAMS_CLI_CHATSVCAGG_TOKEN` | Override ChatSvcAgg JWT |
+| `TEAMS_CLI_OUTLOOK_TOKEN` | Override Outlook JWT (optional, for mail/calendar) |
 | `NO_COLOR` | Disable ANSI color output (any value) |
 | `RUST_LOG` | Tracing filter (e.g. `debug`) |
 
@@ -225,9 +267,11 @@ dynamically via the authz token exchange:
 - **Chat Service Aggregator (CSA)** -- teams, channels, chats listing
 - **Messages Service** -- message read/write (uses the authz-exchanged Skype token)
 - **MiddleTier (MT)** -- user profiles, tenants, domains
+- **Outlook REST API v2.0** -- email and calendar operations (at `outlook.office365.com/api/v2.0`)
 
-These are the same internal APIs used by the official Teams client, not the
-public Microsoft Graph API.
+Teams commands use the same internal APIs as the official Teams client.
+Outlook commands use the Outlook REST API v2.0 with the same app identity,
+avoiding the need for Microsoft Graph API registration.
 
 ## License
 
