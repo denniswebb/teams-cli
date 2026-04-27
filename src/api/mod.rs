@@ -1,8 +1,10 @@
 pub mod authz;
 pub mod blob;
+pub mod copilot;
 pub mod csa;
 pub mod messages;
 pub mod mt;
+pub mod outlook;
 
 use std::time::Duration;
 
