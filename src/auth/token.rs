@@ -7,11 +7,6 @@ pub const TEAMS_APP_ID: &str = "5e3ce6c0-2b1f-4285-8d4b-75ee78787346";
 pub const SKYPE_RESOURCE: &str = "https://api.spaces.skype.com";
 pub const CHATSVCAGG_RESOURCE: &str = "https://chatsvcagg.teams.microsoft.com";
 pub const OUTLOOK_RESOURCE: &str = "https://outlook.office365.com";
-pub const COPILOT_RESOURCE: &str = "https://substrate.office.com/sydney";
-// The M365 Copilot web app uses this app ID, but it doesn't support implicit
-// grant. We use TEAMS_APP_ID instead for the webview flow.
-#[allow(dead_code)]
-pub const COPILOT_APP_ID: &str = "c0ab8ce9-e9a0-42e7-b064-33d422df41f1";
 #[allow(dead_code)]
 pub const REDIRECT_URI: &str = "https://teams.microsoft.com/go";
 #[allow(dead_code)]
@@ -24,8 +19,6 @@ pub struct TokenSet {
     pub chatsvcagg: TokenInfo,
     #[serde(default)]
     pub outlook: Option<TokenInfo>,
-    #[serde(default)]
-    pub copilot: Option<TokenInfo>,
     pub profile: String,
     pub tenant_id: String,
 }
@@ -37,7 +30,6 @@ impl std::fmt::Debug for TokenSet {
             .field("skype", &self.skype)
             .field("chatsvcagg", &self.chatsvcagg)
             .field("outlook", &self.outlook)
-            .field("copilot", &self.copilot)
             .field("profile", &self.profile)
             .field("tenant_id", &self.tenant_id)
             .finish()
@@ -123,15 +115,6 @@ impl TokenSet {
             )),
         }
     }
-
-    pub fn copilot_token(&self) -> crate::error::Result<&str> {
-        match &self.copilot {
-            Some(t) => Ok(&t.raw),
-            None => Err(TeamsError::AuthError(
-                "copilot token not available; run 'teams auth login' to re-authenticate".into(),
-            )),
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -143,8 +126,6 @@ pub(crate) struct JwtClaims {
     aud: Option<String>,
     #[serde(default)]
     pub tid: Option<String>,
-    #[serde(default)]
-    pub oid: Option<String>,
     #[serde(default)]
     pub upn: Option<String>,
     #[serde(default)]
@@ -391,7 +372,6 @@ mod tests {
             skype: make_token_info(skype_exp),
             chatsvcagg: make_token_info(agg_exp),
             outlook: None,
-            copilot: None,
             profile: "test".to_string(),
             tenant_id: "tid-123".to_string(),
         }

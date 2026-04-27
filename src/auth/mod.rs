@@ -19,17 +19,11 @@ pub fn resolve_tokens(profile: &str) -> Result<Option<TokenSet>> {
             .map(|t| token::TokenInfo::from_jwt(&t, token::TokenType::AccessToken))
             .transpose()?;
 
-        let copilot = std::env::var("TEAMS_CLI_COPILOT_TOKEN")
-            .ok()
-            .map(|t| token::TokenInfo::from_jwt(&t, token::TokenType::AccessToken))
-            .transpose()?;
-
         let token_set = TokenSet {
             teams: token::TokenInfo::from_jwt(&teams, token::TokenType::IdToken)?,
             skype: token::TokenInfo::from_jwt(&skype, token::TokenType::AccessToken)?,
             chatsvcagg: token::TokenInfo::from_jwt(&chatsvcagg, token::TokenType::AccessToken)?,
             outlook,
-            copilot,
             profile: profile.to_string(),
             tenant_id: token::extract_tenant_id(&teams)?.unwrap_or_else(|| "common".to_string()),
         };
@@ -61,19 +55,6 @@ pub async fn ensure_outlook_token(profile: &str, tenant: &str) -> Result<TokenSe
         Some(t) if !t.is_expired() => Ok(tokens),
         _ => Err(TeamsError::AuthError(
             "outlook token missing or expired; run 'teams auth login' to re-authenticate".into(),
-        )),
-    }
-}
-
-/// Ensure the Copilot token is present and valid. The webview login flow
-/// acquires the Copilot token as its 5th phase.
-pub async fn ensure_copilot_token(profile: &str, tenant: &str) -> Result<TokenSet> {
-    let tokens = get_or_login(profile, tenant, true).await?;
-
-    match &tokens.copilot {
-        Some(t) if !t.is_expired() => Ok(tokens),
-        _ => Err(TeamsError::AuthError(
-            "copilot token missing or expired; run 'teams auth login' to re-authenticate".into(),
         )),
     }
 }

@@ -79,15 +79,12 @@ fn main() {
             &cli.profile
         };
         let is_outlook_cmd = matches!(cli.command, Commands::Mail(_) | Commands::Calendar(_));
-        let is_copilot_cmd = matches!(cli.command, Commands::Copilot(_));
         let needs_login = match auth::resolve_tokens(profile) {
             Ok(Some(ts)) => {
                 if ts.is_expired() {
                     true
                 } else if is_outlook_cmd {
                     ts.outlook.as_ref().is_none_or(|t| t.is_expired())
-                } else if is_copilot_cmd {
-                    ts.copilot.as_ref().is_none_or(|t| t.is_expired())
                 } else {
                     false
                 }
@@ -163,12 +160,6 @@ async fn run(cli: Cli, format: OutputFormat) -> error::Result<()> {
             let tokens = auth::ensure_outlook_token(profile, &tenant).await?;
             cli::calendar::handle(args, &tokens, &http, format).await
         }
-        Commands::Copilot(args) => {
-            let tenant = cfg.profile(profile).tenant_id.clone();
-            let tokens = auth::ensure_copilot_token(profile, &tenant).await?;
-            cli::copilot::handle(args, &tokens, format).await
-        }
-
         // All other commands need auth + authz token exchange
         cmd => {
             let tenant = cfg.profile(profile).tenant_id.clone();

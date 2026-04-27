@@ -1,6 +1,5 @@
 pub mod chat;
 pub mod conversation;
-pub mod copilot;
 pub mod message;
 pub mod outlook;
 pub mod team;

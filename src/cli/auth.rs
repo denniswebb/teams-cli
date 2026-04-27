@@ -13,7 +13,7 @@ pub struct AuthArgs {
 
 #[derive(Subcommand)]
 pub enum AuthCommand {
-    /// Authenticate with Microsoft Teams, Outlook, and Copilot
+    /// Authenticate with Microsoft Teams and Outlook
     Login {
         /// Tenant ID or 'common'
         #[arg(long, default_value = "common")]
@@ -29,7 +29,7 @@ pub enum AuthCommand {
     },
     /// Print raw access token for scripting
     Token {
-        /// Which token to print: teams, skype, chatsvcagg, outlook, copilot
+        /// Which token to print: teams, skype, chatsvcagg, outlook
         #[arg(default_value = "skype")]
         token_type: String,
     },
@@ -67,10 +67,6 @@ pub async fn handle(args: &AuthArgs, profile: &str, format: OutputFormat) -> Res
                             "expires_at": ts.chatsvcagg.expires_at.map(|t| t.to_rfc3339()),
                         },
                         "outlook_token": ts.outlook.as_ref().map(|t| serde_json::json!({
-                            "expired": t.is_expired(),
-                            "expires_at": t.expires_at.map(|e| e.to_rfc3339()),
-                        })),
-                        "copilot_token": ts.copilot.as_ref().map(|t| serde_json::json!({
                             "expired": t.is_expired(),
                             "expires_at": t.expires_at.map(|e| e.to_rfc3339()),
                         })),
@@ -118,17 +114,9 @@ pub async fn handle(args: &AuthArgs, profile: &str, format: OutputFormat) -> Res
                         ));
                     }
                 },
-                "copilot" => match &ts.copilot {
-                    Some(t) => &t.raw,
-                    None => {
-                        return Err(crate::error::TeamsError::AuthError(
-                            "copilot token not available; run 'teams auth login' first".into(),
-                        ));
-                    }
-                },
                 other => {
                     return Err(crate::error::TeamsError::InvalidInput(format!(
-                        "unknown token type: {other} (use teams, skype, chatsvcagg, outlook, or copilot)"
+                        "unknown token type: {other} (use teams, skype, chatsvcagg, or outlook)"
                     )));
                 }
             };

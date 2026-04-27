@@ -147,7 +147,6 @@ mod tests {
             skype: dummy_token_info(),
             chatsvcagg: dummy_token_info(),
             outlook: None,
-            copilot: None,
             profile: String::new(),
             tenant_id: String::new(),
         }

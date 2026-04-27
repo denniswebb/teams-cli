@@ -19,7 +19,7 @@ clap_complete = "4"
 tokio = { version = "1", features = ["full"] }
 
 # HTTP
-reqwest = { version = "0.12", features = ["json", "cookies", "blocking"] }
+reqwest = { version = "0.12", features = ["json", "cookies"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -52,10 +52,6 @@ anyhow = "1"
 
 # Text processing
 regex = "1"
-
-# WebSocket (SignalR for Copilot)
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
-futures-util = "0.3"
 
 # Misc
 dirs = "6"

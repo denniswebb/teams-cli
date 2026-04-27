@@ -150,7 +150,6 @@ mod tests {
             skype: TokenInfo::from_jwt(&jwt_skype, TokenType::AccessToken).unwrap(),
             chatsvcagg: TokenInfo::from_jwt(&jwt_agg, TokenType::AccessToken).unwrap(),
             outlook: None,
-            copilot: None,
             profile: "test-profile".to_string(),
             tenant_id: "t-123".to_string(),
         }
